@@ -1,12 +1,15 @@
-﻿using Microsoft.AspNetCore.Http;
+﻿using Asp.Versioning;
 using Microsoft.AspNetCore.Mvc;
+using TrafficDataCollection.Api.Models.Cache;
 using TrafficDataCollection.Api.Services.Interfaces;
 
 namespace TrafficDataCollection.Api.Controllers
 {
-    [Route("api/[controller]")]
+    
     [ApiController]
-    public class CacheController : ControllerBase
+    [ApiVersion(1.0)]
+    [Route("v{version:apiVersion}/[controller]")]
+    public class CacheController : BaseApiController
     {
         private readonly IRedisService _redisService;
         private readonly ILogger<CacheController> _logger;
@@ -26,24 +29,24 @@ namespace TrafficDataCollection.Api.Controllers
                 var indexCreated = await _redisService.CreateIndexIfNotExistsAsync();
                 if (!indexCreated)
                 {
-                    return StatusCode(500, new { error = "Failed to create Redis.OM index" });
+                    return ErrorResponse(500, 500, "Failed to create Redis.OM index");
                 }
 
                 _logger.LogInformation("Loading traffic lights into Redis");
                 var result = await _redisService.LoadTrafficLightsToRedisAsync();
                 if (result)
                 {
-                    return Ok(new { message = "Traffic lights successfully loaded to Redis" });
+                    return SuccessResponse(new { }, "Traffic lights successfully loaded to Redis");
                 }
                 else
                 {
-                    return StatusCode(500, new { error = "Failed to load traffic lights" });
+                    return ErrorResponse(500, 500, "Failed to load traffic lights");
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error loading traffic lights to Redis");
-                return StatusCode(500, new { error = "An unexpected error occurred", message = ex.Message });
+                return InternalErrorResponse(ex.Message);
             }
         }
 
@@ -55,15 +58,15 @@ namespace TrafficDataCollection.Api.Controllers
                 var light = await _redisService.GetTrafficLightByIdAsync(id);
                 if (light == null)
                 {
-                    return NotFound(new { error = $"Traffic light with ID {id} not found" });
+                    return NotFoundResponse($"Traffic light with ID {id} not found");
                 }
 
-                return Ok(light);
+                return SuccessResponse(light);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, $"Error retrieving traffic light {id}");
-                return StatusCode(500, new { error = "An unexpected error occurred", message = ex.Message });
+                return InternalErrorResponse(ex.Message);
             }
         }
 
@@ -76,12 +79,12 @@ namespace TrafficDataCollection.Api.Controllers
             try
             {
                 var lights = await _redisService.SearchTrafficLightsAsync(lat, lng, radius);
-                return Ok(lights);
+                return SearchResponse(lights, lights.Count());
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error searching traffic lights");
-                return StatusCode(500, new { error = "An unexpected error occurred", message = ex.Message });
+                return InternalErrorResponse(ex.Message);
             }
         }
     }
