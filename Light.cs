@@ -10,6 +10,7 @@ namespace TrafficDataCollection.Api.Models.Entities
         [BsonRepresentation(BsonType.ObjectId)]
         public string _id { get; set; }
 
+
         [BsonElement("id")]
         public int Id { get; set; }
 
@@ -32,7 +33,7 @@ namespace TrafficDataCollection.Api.Models.Entities
         public string CameraLiveUrl { get; set; }
 
         [BsonElement("main_light_id")]
-        public string MainLightId { get; set; }
+        public int? MainLightId { get; set; }
 
         [BsonElement("main_light_direction")]
         public string MainLightDirection { get; set; }

@@ -1,6 +1,6 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using TrafficDataCollection.Api.Models;
-using TrafficDataCollection.Api.Services;
+using TrafficDataCollection.Api.Services.Interfaces;
 
 namespace TrafficLightMonitoring.Controllers
 {

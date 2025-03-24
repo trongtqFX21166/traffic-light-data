@@ -1,5 +1,6 @@
 ﻿using TrafficDataCollection.Api.Models.Entities;
 using TrafficDataCollection.Api.Repository.Interfaces;
+using TrafficDataCollection.Api.Services.Interfaces;
 
 namespace TrafficDataCollection.Api.Services
 {

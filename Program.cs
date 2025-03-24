@@ -2,8 +2,10 @@
 using Microsoft.Extensions.Options;
 using Platform.KafkaClient;
 using Platform.KafkaClient.Models;
+using TrafficDataCollection.Api.Models.Cache;
 using TrafficDataCollection.Api.Repository;
 using TrafficDataCollection.Api.Services;
+using TrafficDataCollection.Api.Services.Interfaces;
 
 namespace TrafficDataCollection.Api
 {
@@ -35,6 +37,9 @@ namespace TrafficDataCollection.Api
 
                 services.AddTransient<ILightService, LightService>();
                 services.AddTransient<ISchedulerService, SchedulerService>();
+
+                services.Configure<RedisSettings>(context.Configuration.GetSection("LightRedis"));
+                services.AddScoped<IRedisService, RedisService>();
 
             });
 
