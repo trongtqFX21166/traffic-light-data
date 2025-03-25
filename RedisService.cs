@@ -54,47 +54,88 @@ namespace TrafficDataCollection.Api.Services
         {
             try
             {
-                // Get all lights
-                var lights = await _lightRepository.GetAllLightsAsync();
-                var count = 0;
+                // Step 1: Get all main lights (those without main_light_id)
+                var mainLights = await _lightRepository.GetAllLightsWithoutMainLightIdAsync();
+                _logger.LogInformation($"Found {mainLights.Count()} main traffic lights");
 
                 // Track IDs for existing records
                 var existingIds = new HashSet<string>(_trafficLights.Select(t => t.Id));
+                var processedCount = 0;
 
-                foreach (var light in lights)
+                // Step 2 & 3: Process main lights first
+                foreach (var mainLight in mainLights)
                 {
-                    // Get associated cycle light data
-                    var cycleLight = await _lightRepository.GetCycleLightByLightIdAsync(light.Id);
+                    // Get associated cycle light data for the main light
+                    var mainCycleLight = await _lightRepository.GetCycleLightByLightIdAsync(mainLight.Id);
 
                     // Skip if no cycle light data is available
-                    if (cycleLight == null)
+                    if (mainCycleLight == null)
                     {
-                        _logger.LogWarning($"No cycle light data found for light ID {light.Id}, skipping");
+                        _logger.LogWarning($"No cycle light data found for main light ID {mainLight.Id}, skipping");
                         continue;
                     }
 
-                    // Create combined model
-                    var trafficLightModel = TrafficLightRedisModel.FromEntities(light, cycleLight);
+                    // Create combined model for main light
+                    var mainLightModel = TrafficLightRedisModel.FromEntities(mainLight, mainCycleLight);
 
-                    // Check if record already exists
-                    var id = $"{_prefixKey}traffic_light:{light.Id}";
-                    trafficLightModel.Id = id; // Ensure the correct ID with prefix
+                    // Set correct ID with prefix
+                    var mainLightId = $"{_prefixKey}traffic_light:{mainLight.Id}";
+                    mainLightModel.Id = mainLightId;
 
-                    if (existingIds.Contains(id))
+                    // Update or insert main light
+                    if (existingIds.Contains(mainLightId))
                     {
-                        // Update existing record
-                        await _trafficLights.UpdateAsync(trafficLightModel);
+                        await _trafficLights.UpdateAsync(mainLightModel);
                     }
                     else
                     {
-                        // Insert new record
-                        await _trafficLights.InsertAsync(trafficLightModel);
+                        await _trafficLights.InsertAsync(mainLightModel);
                     }
 
-                    count++;
+                    processedCount++;
+
+                    // Step 4 & 5: Get and process dependent lights
+                    var dependentLights = await _lightRepository.GetLightsByMainLightIdAsync(mainLight.Id);
+                    _logger.LogInformation($"Found {dependentLights.Count()} dependent lights for main light ID {mainLight.Id}");
+
+                    foreach (var dependentLight in dependentLights)
+                    {
+                        // Clone the main cycle light for this dependent light
+                        var dependentCycleLight = CloneCycleLight(mainCycleLight, dependentLight.Id);
+
+                        // Step 5.1 & 5.2: Handle different directions
+                        if (dependentLight.MainLightDirection?.ToLower() == "opposite")
+                        {
+                            // For opposite direction: adjust cycle start timestamp
+                            // Move the start time by the duration of green + yellow phases
+                            dependentCycleLight.CycleStartTimestamp = mainCycleLight.CycleStartTimestamp +
+                                                                     mainCycleLight.GreenTime +
+                                                                     mainCycleLight.YellowTime;
+                        }
+                        // For "Same" direction, we keep the original timing
+
+                        // Create combined model for dependent light
+                        var dependentLightModel = TrafficLightRedisModel.FromEntities(dependentLight, dependentCycleLight);
+
+                        // Set correct ID with prefix
+                        var dependentLightId = $"{_prefixKey}traffic_light:{dependentLight.Id}";
+                        dependentLightModel.Id = dependentLightId;
+
+                        // Update or insert dependent light
+                        if (existingIds.Contains(dependentLightId))
+                        {
+                            await _trafficLights.UpdateAsync(dependentLightModel);
+                        }
+                        else
+                        {
+                            await _trafficLights.InsertAsync(dependentLightModel);
+                        }
+
+                        processedCount++;
+                    }
                 }
 
-                _logger.LogInformation($"Successfully loaded {count} traffic lights to Redis");
+                _logger.LogInformation($"Successfully loaded {processedCount} traffic lights to Redis");
                 return true;
             }
             catch (Exception ex)
@@ -102,6 +143,28 @@ namespace TrafficDataCollection.Api.Services
                 _logger.LogError(ex, "Error loading traffic lights to Redis");
                 return false;
             }
+        }
+
+        // Helper method to clone a cycle light for a dependent light
+        private CycleLight CloneCycleLight(CycleLight sourceCycleLight, int targetLightId)
+        {
+            return new CycleLight
+            {
+                Id = Guid.NewGuid().ToString(),
+                LightId = targetLightId,
+                RedTime = sourceCycleLight.RedTime,
+                GreenTime = sourceCycleLight.GreenTime,
+                YellowTime = sourceCycleLight.YellowTime,
+                CycleStartTimestamp = sourceCycleLight.CycleStartTimestamp,
+                LastModified = DateTime.UtcNow,
+                TimeTick = sourceCycleLight.TimeTick,
+                FramesInSecond = sourceCycleLight.FramesInSecond,
+                SecondsExtractFrame = sourceCycleLight.SecondsExtractFrame,
+                Source = sourceCycleLight.Source,
+                Status = sourceCycleLight.Status,
+                ReasonCode = sourceCycleLight.ReasonCode,
+                Reason = "Generated from main light"
+            };
         }
 
         public async Task<TrafficLightRedisModel> GetTrafficLightByIdAsync(int lightId)

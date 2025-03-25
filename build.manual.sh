@@ -1,7 +1,7 @@
 #!/bin/bash
 PRJ=""
 IMAGE_TAG="trafficdatacollection.api"
-VER="1.0.0"
+VER="1.0.1"
 RELEASE_FOLDER=""
 # wait k8s export image
 REGISTRY_URL="vmapi/hubcentral"

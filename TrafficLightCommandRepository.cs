@@ -39,5 +39,33 @@ namespace TrafficDataCollection.Api.Repository
         {
             await _commands.ReplaceOneAsync(cmd => cmd.Id == command.Id, command);
         }
+
+        public async Task<IEnumerable<TrafficLightCommand>> GetPendingOrRunningCommandsByDagRunIdAsync(string dagRunId)
+        {
+            return await _commands.Find(cmd =>
+                cmd.DagRunId == dagRunId &&
+                (cmd.Status == "Pending" || cmd.Status == "Running"))
+                .ToListAsync();
+        }
+
+        public async Task UpdateManyAsync(IEnumerable<TrafficLightCommand> commands)
+        {
+            if (commands == null || !commands.Any())
+                return;
+
+            var bulkOps = new List<WriteModel<TrafficLightCommand>>();
+
+            foreach (var command in commands)
+            {
+                var filter = Builders<TrafficLightCommand>.Filter.Eq(x => x.Id, command.Id);
+                var updateOp = new ReplaceOneModel<TrafficLightCommand>(filter, command);
+                bulkOps.Add(updateOp);
+            }
+
+            if (bulkOps.Any())
+            {
+                await _commands.BulkWriteAsync(bulkOps);
+            }
+        }
     }
 }

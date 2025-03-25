@@ -139,5 +139,50 @@ namespace TrafficDataCollection.Api.Services
 
             return allCompleted;
         }
+
+        public async Task<(int, bool)> SetTimeoutForPendingCommandsAsync(string airflowDagId, string airflowDagRunId)
+        {
+            // Get the DAG run
+            var dagRun = await _dagRunRepository.GetByAirflowIdsAsync(airflowDagId, airflowDagRunId);
+            if (dagRun == null)
+            {
+                _logger.LogWarning($"DAG run not found for {airflowDagId} / {airflowDagRunId}");
+                return (0, false);
+            }
+
+            // Get all pending or running commands for this DAG run
+            var pendingOrRunningCommands = await _commandRepository.GetPendingOrRunningCommandsByDagRunIdAsync(dagRun.Id);
+            var commandsList = pendingOrRunningCommands.ToList();
+
+            if (!commandsList.Any())
+            {
+                _logger.LogInformation($"No pending or running commands found for DAG run {dagRun.Id}");
+                return (0, false);
+            }
+
+            // Update all pending or running commands to "Timeout" status
+            foreach (var command in commandsList)
+            {
+                command.Status = "Timeout";
+                command.Reason = "Command timed out manually";
+                command.UpdatedAt = DateTime.UtcNow;
+            }
+
+            // Bulk update all commands
+            await _commandRepository.UpdateManyAsync(commandsList);
+
+            // Update DAG run status if needed
+            bool dagStatusUpdated = false;
+            if (dagRun.Status == "Running")
+            {
+                dagRun.Status = "Timeout";
+                dagRun.EndTime = DateTime.UtcNow;
+                await _dagRunRepository.UpdateAsync(dagRun);
+                dagStatusUpdated = true;
+            }
+
+            _logger.LogInformation($"Set {commandsList.Count} commands to timeout status for DAG run {dagRun.Id}");
+            return (commandsList.Count, dagStatusUpdated);
+        }
     }
 }

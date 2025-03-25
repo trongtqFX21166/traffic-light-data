@@ -67,5 +67,31 @@ namespace TrafficLightMonitoring.Controllers
                 return InternalErrorResponse(ex.Message);
             }
         }
+
+        [HttpPost("set-time-out-collect-lights")]
+        public async Task<IActionResult> SetTimeOutCollectLights([FromBody] TriggerCollectLightsRequest request)
+        {
+            if (string.IsNullOrEmpty(request.AirflowDagId) || string.IsNullOrEmpty(request.AirflowDagRunId))
+            {
+                return BadRequestResponse("airflow_dag_id and airflow_dag_run_id are required");
+            }
+
+            try
+            {
+                _logger.LogInformation($"Setting timeout for light collection DAG {request.AirflowDagId}, run {request.AirflowDagRunId}");
+                var result = await _schedulerService.SetTimeoutForPendingCommandsAsync(request.AirflowDagId, request.AirflowDagRunId);
+
+                return SuccessResponse(new
+                {
+                    timedout_commands_count = result.Item1,
+                    dag_status_updated = result.Item2
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error setting timeout for light collection commands");
+                return InternalErrorResponse(ex.Message);
+            }
+        }
     }
 }
