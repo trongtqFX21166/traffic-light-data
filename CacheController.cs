@@ -87,5 +87,27 @@ namespace TrafficDataCollection.Api.Controllers
                 return InternalErrorResponse(ex.Message);
             }
         }
+
+
+        [HttpGet("get-traffic-lights")]
+        public async Task<IActionResult> GetTrafficLights(
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 100)
+        {
+            try
+            {
+                _logger.LogInformation($"Retrieving traffic lights, page {page}, pageSize {pageSize}");
+
+                var (lights, totalCount) = await _redisService.GetTrafficLightsAsync(page, pageSize);
+
+                return SearchResponse(lights, totalCount);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving traffic lights from Redis");
+                return InternalErrorResponse(ex.Message);
+            }
+        }
+
     }
 }

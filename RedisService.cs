@@ -203,6 +203,36 @@ namespace TrafficDataCollection.Api.Services
             }
         }
 
+        public async Task<(IEnumerable<TrafficLightRedisModel>, long)> GetTrafficLightsAsync(
+    int page = 1,
+    int pageSize = 100)
+        {
+            try
+            {
+                // Start with all traffic lights
+                var query = _trafficLights.AsQueryable();
+
+                // Get total count for pagination
+                long totalCount = query.Count();
+
+                // Apply pagination
+                var pagedResults = query
+                    .OrderBy(light => light.LightId)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
+                    .ToList();
+
+                _logger.LogInformation($"Retrieved {pagedResults.Count} traffic lights out of {totalCount} total");
+
+                return (pagedResults, totalCount);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving traffic lights from Redis");
+                return (new List<TrafficLightRedisModel>(), 0);
+            }
+        }
+
         public void Dispose()
         {
             _provider?.Connection?.Dispose();

@@ -184,5 +184,63 @@ namespace TrafficDataCollection.Api.Services
             _logger.LogInformation($"Set {commandsList.Count} commands to timeout status for DAG run {dagRun.Id}");
             return (commandsList.Count, dagStatusUpdated);
         }
+
+        public async Task<bool> UpdateDagRunStatusAsync(string airflowDagId, string airflowDagRunId, string status, string reason = null)
+        {
+            // Get the DAG run
+            var dagRun = await _dagRunRepository.GetByAirflowIdsAsync(airflowDagId, airflowDagRunId);
+            if (dagRun == null)
+            {
+                _logger.LogWarning($"DAG run not found for {airflowDagId} / {airflowDagRunId}");
+                return false;
+            }
+
+            // Validate the status value
+            string[] validStatuses = { "Running", "Success", "Failed", "Timeout", "Canceled" };
+            if (!validStatuses.Contains(status))
+            {
+                _logger.LogWarning($"Invalid status '{status}' for DAG run {dagRun.Id}. Valid values are: {string.Join(", ", validStatuses)}");
+                throw new ArgumentException($"Invalid status value. Valid values are: {string.Join(", ", validStatuses)}");
+            }
+
+            // Check if the status is actually changing
+            if (dagRun.Status == status)
+            {
+                _logger.LogInformation($"DAG run {dagRun.Id} already has status '{status}', no update needed");
+                return true;
+            }
+
+            // Update the DAG run status
+            _logger.LogInformation($"Updating DAG run {dagRun.Id} status from '{dagRun.Status}' to '{status}'");
+            dagRun.Status = status;
+
+            // If status indicates completion, set the end time
+            if (status == "Success" || status == "Failed" || status == "Timeout" || status == "Canceled")
+            {
+                dagRun.EndTime = DateTime.UtcNow;
+            }
+
+            // If a reason was provided, store it in the execution parameters (as a JSON object)
+            if (!string.IsNullOrEmpty(reason))
+            {
+                // Parse existing execution parameters if they exist
+                var executionParams = !string.IsNullOrEmpty(dagRun.ExecutionParameters)
+                    ? JsonConvert.DeserializeObject<Dictionary<string, object>>(dagRun.ExecutionParameters)
+                    : new Dictionary<string, object>();
+
+                // Add or update the status reason
+                executionParams["status_reason"] = reason;
+                executionParams["status_updated_at"] = DateTime.UtcNow.ToString("o");
+
+                // Update the execution parameters
+                dagRun.ExecutionParameters = JsonConvert.SerializeObject(executionParams);
+            }
+
+            // Save the updated DAG run
+            await _dagRunRepository.UpdateAsync(dagRun);
+
+            _logger.LogInformation($"Successfully updated DAG run {dagRun.Id} status to '{status}'");
+            return true;
+        }
     }
 }

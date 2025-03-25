@@ -93,5 +93,43 @@ namespace TrafficLightMonitoring.Controllers
                 return InternalErrorResponse(ex.Message);
             }
         }
+
+        [HttpPost("update-dag-run-status")]
+        public async Task<IActionResult> UpdateDagRunStatus([FromBody] UpdateDagRunStatusRequest request)
+        {
+            if (string.IsNullOrEmpty(request.AirflowDagId) || string.IsNullOrEmpty(request.AirflowDagRunId))
+            {
+                return BadRequestResponse("airflow_dag_id and airflow_dag_run_id are required");
+            }
+
+            if (string.IsNullOrEmpty(request.Status))
+            {
+                return BadRequestResponse("status is required");
+            }
+
+            try
+            {
+                _logger.LogInformation($"Updating DAG run status for DAG {request.AirflowDagId}, run {request.AirflowDagRunId} to {request.Status}");
+                var updated = await _schedulerService.UpdateDagRunStatusAsync(request.AirflowDagId, request.AirflowDagRunId, request.Status, request.Reason);
+
+                if (updated)
+                {
+                    return SuccessResponse(new
+                    {
+                        updated = true,
+                        status = request.Status
+                    });
+                }
+                else
+                {
+                    return NotFoundResponse($"DAG run not found for {request.AirflowDagId} / {request.AirflowDagRunId}");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error updating DAG run status");
+                return InternalErrorResponse(ex.Message);
+            }
+        }
     }
 }
