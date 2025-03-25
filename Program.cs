@@ -1,120 +1,45 @@
-
-using Asp.Versioning;
-using Asp.Versioning.ApiExplorer;
+﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Microsoft.OpenApi.Models;
 using Platform.KafkaClient;
 using Platform.KafkaClient.Models;
-using TrafficDataCollection.Api.Helper;
-using TrafficDataCollection.Api.Models;
-using TrafficDataCollection.Api.Models.Cache;
-using TrafficDataCollection.Api.Repository;
-using TrafficDataCollection.Api.Services;
-using TrafficDataCollection.Api.Services.Interfaces;
+using Platform.Serilog;
 
-namespace TrafficDataCollection.Api
+namespace Platform.TrafficDataCollection.ExtractFrames.Service
 {
     public class Program
     {
         public static void Main(string[] args)
         {
-            var builder = WebApplication.CreateBuilder(args);
+            CreateHostBuilder(args).Build().Run();
+        }
 
-            // Add services to the container.
-
-            builder.Services.AddControllers();
-            // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
-            builder.Services.AddEndpointsApiExplorer();
-            builder.Services.AddSwaggerGen();
-
-            // Add API versioning services
-            builder.Services.AddApiVersioning(options =>
+        public static IHostBuilder CreateHostBuilder(string[] args) =>
+            Host.CreateDefaultBuilder(args)
+            .ConfigureServices((context, services) =>
             {
-                options.DefaultApiVersion = new ApiVersion(1, 0);
-                options.AssumeDefaultVersionWhenUnspecified = true;
-                options.ReportApiVersions = true;
-            })
-            .AddApiExplorer(options =>
-            {
-                // Format the version as "v1.0" in the URL
-                options.GroupNameFormat = "'v'VVV";
-                options.SubstituteApiVersionInUrl = true;
-            });
+                services.AddHostedService<HostedService>();
 
-            // Configure Swagger for API versioning
-            builder.Services.AddSwaggerGen(options =>
-            {
-                // Add a swagger document for each discovered API version
-                var provider = builder.Services.BuildServiceProvider()
-                    .GetRequiredService<IApiVersionDescriptionProvider>();
-
-                foreach (var description in provider.ApiVersionDescriptions)
-                {
-                    options.SwaggerDoc(
-                        description.GroupName,
-                        new OpenApiInfo
-                        {
-                            Title = $"Traffic Light API {description.ApiVersion}",
-                            Version = description.ApiVersion.ToString(),
-                            Description = "API for traffic light data collection and analysis"
-                        });
-                }
-
-                options.OperationFilter<SwaggerDefaultValues>();
-            });
-
-
-            builder.Host.ConfigureServices((context, services) => {
-
-                services.RegisterRepo(context);
-
-                services.Configure<ProducerConfig>("CameraCollectionProducer", context.Configuration.GetSection("CameraCollectionProducer"));
+                services.Configure<ProducerConfig>("Producer", context.Configuration.GetSection("Producer"));
                 services.AddSingleton<IProducer>(s =>
                 {
-                    var settings = s.GetRequiredService<IOptionsMonitor<ProducerConfig>>().Get("CameraCollectionProducer");
+                    var settings = s.GetRequiredService<IOptionsMonitor<ProducerConfig>>().Get("Producer");
                     var logger = s.GetRequiredService<ILogger<Producer>>();
 
                     return new Producer(logger, settings);
                 });
 
-                services.AddTransient<ILightService, LightService>();
-                services.AddTransient<ISchedulerService, SchedulerService>();
-
-                services.Configure<RedisSettings>(context.Configuration.GetSection("LightRedis"));
-                services.AddScoped<IRedisService, RedisService>();
-
-            });
-
-            var app = builder.Build();
-
-            // Configure the HTTP request pipeline.
-            if (app.Environment.IsDevelopment())
-            {
-                app.UseSwagger();
-                app.UseSwaggerUI(options =>
+                services.Configure<ConsumerConfig>("Consumer",
+                        context.Configuration.GetSection("Consumer"));
+                services.AddSingleton<IConsumer>(s =>
                 {
-                    var provider = app.Services.GetRequiredService<IApiVersionDescriptionProvider>();
+                    var settings = s.GetRequiredService<IOptionsMonitor<ConsumerConfig>>().Get("Consumer");
+                    var logger = s.GetRequiredService<ILogger<Consumer>>();
 
-                    foreach (var description in provider.ApiVersionDescriptions)
-                    {
-                        options.SwaggerEndpoint(
-                            $"/swagger/{description.GroupName}/swagger.json",
-                            description.GroupName.ToUpperInvariant());
-                    }
+                    return new Consumer(logger, settings);
                 });
-            }
-
-            // Add global exception handler middleware
-            app.UseGlobalExceptionHandler();
-
-            app.UseHttpsRedirection();
-
-            app.UseAuthorization();
-
-
-            app.MapControllers();
-
-            app.Run();
-        }
+            })
+            .RegisterSerilogConfig();
     }
 }
