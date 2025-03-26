@@ -1,7 +1,7 @@
 #!/bin/bash
 PRJ=""
 IMAGE_TAG="platform.trafficdatacollection.extractframes.service"
-VER="dev.1.0.3.14"
+VER="dev.1.0.3.17"
 RELEASE_FOLDER=""
 # wait k8s export image
 REGISTRY_URL="vmapi/hubcentral"

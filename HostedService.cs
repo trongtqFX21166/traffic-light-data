@@ -62,7 +62,7 @@ namespace Platform.TrafficDataCollection.ExtractFrames.Service
             {
                 var eventModel = JsonConvert.DeserializeObject<VMLCameraCollectionDto>(consumeResult.Value);
 
-                if (string.IsNullOrEmpty(eventModel.VideoUrl))
+                if (string.IsNullOrEmpty(eventModel.CameraLiveUrl))
                 {
                     _logger.LogInformation($"VideoUrl rỗng");
                     return;
@@ -92,7 +92,7 @@ namespace Platform.TrafficDataCollection.ExtractFrames.Service
             }
         }
 
-        private async Task<(int successCount, int failCount)> UploadImagesToS3Direct(string imageDirectory, string format)
+        private async Task<(int successCount, int failCount)> UploadImagesToS3Direct(string imageDirectory, string lightId, long unixTime, string format)
         {
             var files = Directory.GetFiles(imageDirectory, $"*.{format}");
             int totalFiles = files.Length;
@@ -138,7 +138,7 @@ namespace Platform.TrafficDataCollection.ExtractFrames.Service
                             string newFileName = $"{timestamp}_{i:D7}.{format}";
 
                             // Tạo URL đầy đủ
-                            string resourcePath = $"/{_bucketName}/{_keyPrefix}/{newFileName}";
+                            string resourcePath = $"/{_bucketName}/{lightId}/{unixTime}/{newFileName}";
                             string fullUrl = $"{_baseUrl}{resourcePath}";
 
                             // Tạo request
@@ -301,6 +301,7 @@ namespace Platform.TrafficDataCollection.ExtractFrames.Service
             var frameExtractionWatch = new Stopwatch();
             var lastFrameTime = DateTime.Now;
             var frameExtractionTimes = new List<double>();
+            long dateUnix = DateTimeOffset.Now.ToUnixTimeSeconds();
             FileSystemWatcher _directoryWatcher;
 
             // Thiết lập các tùy chọn
@@ -375,7 +376,7 @@ namespace Platform.TrafficDataCollection.ExtractFrames.Service
             }
 
             // Thêm protocol whitelist và input URL
-            arguments.Append($"-protocol_whitelist file,http,https,tcp,tls,crypto -i \"{eventModel.VideoUrl}\" ");
+            arguments.Append($"-protocol_whitelist file,http,https,tcp,tls,crypto -i \"{eventModel.CameraLiveUrl}\" ");
 
             // Thêm filter và tùy chọn định dạng
             if (imageFormat == "png")
@@ -532,36 +533,22 @@ namespace Platform.TrafficDataCollection.ExtractFrames.Service
             {
                 // Upload lên S3
                 _logger.LogInformation("Bắt đầu tải các frame lên S3...");
-                await UploadImagesToS3Direct(outputDir, imageFormat);
+                await UploadImagesToS3Direct(outputDir, eventModel.Id, dateUnix, imageFormat);
 
                 await _producer.ProduceMessageAsync(JsonConvert.SerializeObject(new VMLAnalyzationExtractFramesDto()
                 {
                     Id = eventModel.Id,
                     Type = eventModel.Type,
                     CameraSource = eventModel.CameraSource,
+                    CameraName = eventModel.CameraName,
                     SeqId = eventModel.SeqId,
                     FrameUrl = "http://localhost:9000/iothub-images?list-type=2&prefix={light-id}",
                     FramesInSecond = eventModel.FramesInSecond,
                     DurationExtractFrame = eventModel.DurationExtractFrame,
                     BeginExtractFrameTime = beginExtractFrameTime,
                     EndExtractFrameTime = endExtractFrameTime,
-                    Bboxes = new List<List<List<int>>>
-            {
-                new List<List<int>>
-                {
-                    new List<int> {17, 125},
-                    new List<int> {38, 125},
-                    new List<int> {38, 165},
-                    new List<int> {17, 165}
-                }
-            },
-                    TimestampBBox = new List<List<double>>
-            {
-                new List<double> {363.6, 3.6},
-                new List<double> {516.0, 3.6},
-                new List<double> {516.0, 18.0},
-                new List<double> {363.6, 18.0}
-            }
+                    Bboxes = eventModel.Bboxes,
+                    TimestampBBox = eventModel.TimestampBBox
                 }));
 
                 // Xóa thư mục tạm nếu được cấu hình
