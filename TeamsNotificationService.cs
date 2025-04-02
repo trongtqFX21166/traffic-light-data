@@ -19,11 +19,11 @@ namespace TrafficDataCollection.Api.Services
 
         public NotificationService(
             ILogger<NotificationService> logger,
-            HttpClient httpClient,
+            IHttpClientFactory httpClientFac,
             IConfiguration configuration)
         {
             _logger = logger;
-            _httpClient = httpClient;
+            _httpClient = httpClientFac.CreateClient("TeamNotifyClient");
             _configuration = configuration;
         }
 
@@ -31,13 +31,9 @@ namespace TrafficDataCollection.Api.Services
         {
             try
             {
-                if (recipients == null || recipients.Length == 0)
-                {
-                    _logger.LogWarning("No recipients specified for notification. Skipping notification.");
-                    return;
-                }
+            
 
-                string teamsWebhookUrl = _configuration.GetValue<string>("TeamsWebhook:Url");
+                string teamsWebhookUrl = _configuration.GetValue<string>("TeamsWebhookSettings:WebhookUrl");
 
                 if (!string.IsNullOrEmpty(teamsWebhookUrl))
                 {
@@ -45,10 +41,13 @@ namespace TrafficDataCollection.Api.Services
                 }
 
                 // Send email notifications if email addresses are provided
-                var emailRecipients = recipients.Where(r => IsValidEmail(r)).ToArray();
-                if (emailRecipients.Length > 0)
+                if (recipients?.Length > 0)
                 {
-                    await SendEmailNotificationAsync(summary, emailRecipients);
+                    var emailRecipients = recipients.Where(r => IsValidEmail(r)).ToArray();
+                    if (emailRecipients.Length > 0)
+                    {
+                        await SendEmailNotificationAsync(summary, emailRecipients);
+                    }
                 }
             }
             catch (Exception ex)
