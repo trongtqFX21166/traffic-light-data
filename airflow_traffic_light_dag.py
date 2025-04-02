@@ -1,317 +1,201 @@
-"""
-Traffic Light Collection Airflow DAG
-
-This DAG orchestrates the traffic light data collection process:
-1. Triggers the collection of traffic light data
-2. Periodically checks the status of the collection
-3. Sets timeout for commands that run too long
-4. Generates a job summary and sends notifications when the job completes
-"""
-
-from datetime import datetime, timedelta
-import json
-import requests
 from airflow import DAG
-from airflow.models import Variable
 from airflow.operators.python import PythonOperator
-from airflow.operators.empty import EmptyOperator
-from airflow.sensors.http_sensor import HttpSensor
-from airflow.exceptions import AirflowException
+from airflow.operators.bash import BashOperator
+from airflow.utils.dates import days_ago
+from datetime import timedelta
+import requests
+import json
+import time
 
-# Default arguments for the DAG
+# API endpoints
+API_BASE_URL = "http://192.168.8.230:31215"
+TRIGGER_URL = f"{API_BASE_URL}/v1/scheduler/trigger-collect-lights"
+CHECK_URL = f"{API_BASE_URL}/v1/scheduler/check-collect-lights"
+TIMEOUT_URL = f"{API_BASE_URL}/v1/scheduler/set-time-out-collect-lights"
+LOAD_CACHE_URL = f"{API_BASE_URL}/v1/cache/load-traffic-lights"
+
 default_args = {
-    'owner': 'traffic_data_team',
+    'owner': 'airflow',
     'depends_on_past': False,
-    'email': ['traffic_alerts@vietmap.com'],
+    'start_date': days_ago(1),
     'email_on_failure': True,
     'email_on_retry': False,
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
-    'execution_timeout': timedelta(hours=3),
+    'execution_timeout': timedelta(minutes=15),  # Set execution timeout to 15 minutes
+    'dagrun_timeout': timedelta(minutes=15)  # Set DAG run timeout to 15 minutes
 }
 
-# API configuration
-API_BASE_URL = Variable.get("api_base_url", "http://traffic-data-api:5000")
-API_VERSION = "v1"
-API_TIMEOUT = 30  # seconds
+dag = DAG(
+    'traffic_light_collection',
+    default_args=default_args,
+    description='Traffic Light Data Collection Pipeline',
+    schedule_interval=timedelta(minutes=30),  # Run every 30 minutes
+    catchup=False,
+)
 
 
-# Function to trigger the light collection process
 def trigger_collect_lights(**context):
+    """Trigger the light collection process"""
     dag_id = context['dag'].dag_id
     dag_run_id = context['run_id']
 
-    url = f"{API_BASE_URL}/{API_VERSION}/scheduler/trigger-collect-lights"
+    # Check if this is a manually triggered run from Airflow UI
+    is_manual_trigger = context.get('dag_run').external_trigger
+    if is_manual_trigger:
+        print(f"This is a manually triggered DAG run with run_id: {dag_run_id}")
 
     payload = {
         "airflow_dag_id": dag_id,
         "airflow_dag_run_id": dag_run_id
     }
 
-    response = requests.post(
-        url=url,
-        json=payload,
-        timeout=API_TIMEOUT
-    )
-
-    if response.status_code != 200:
-        raise AirflowException(f"Failed to trigger light collection: {response.text}")
+    response = requests.post(TRIGGER_URL, json=payload)
+    response.raise_for_status()  # Raise exception for HTTP errors
 
     result = response.json()
+    # Extract dag_run_id from the response data structure based on the API pattern
+    dag_run_id = result.get('data', {}).get('dag_run_id')
+    context['ti'].xcom_push(key='dag_run_id', value=dag_run_id)
+    context['ti'].xcom_push(key='collection_success', value=False)  # Initialize as False
+    context['ti'].xcom_push(key='is_manual_trigger', value=is_manual_trigger)  # Store the trigger type
 
-    if result.get('code') != 0:
-        raise AirflowException(f"API returned error: {result.get('msg')}")
-
-    context['ti'].xcom_push(key='dag_run_id', value=result['data']['dag_run_id'])
-
-    print(f"Successfully triggered light collection with dag_run_id: {result['data']['dag_run_id']}")
-    return result['data']['dag_run_id']
+    print(f"Triggered light collection with DAG run ID: {dag_run_id}")
+    return result
 
 
-# Function to check if the collection is complete
-def check_collect_lights_status(**context):
+def check_collect_lights(**context):
+    """Check the status of light collection with 1 hour timeout"""
     dag_id = context['dag'].dag_id
     dag_run_id = context['run_id']
-
-    url = f"{API_BASE_URL}/{API_VERSION}/scheduler/check-collect-lights"
 
     params = {
         "airflow_dag_id": dag_id,
         "airflow_dag_run_id": dag_run_id
     }
 
-    response = requests.get(
-        url=url,
-        params=params,
-        timeout=API_TIMEOUT
-    )
+    # 15 attempts × 60 seconds = 15 minutes total
+    max_attempts = 5
+    delay_seconds = 60  # Check every minute
 
-    if response.status_code != 200:
-        raise AirflowException(f"Failed to check light collection status: {response.text}")
-
-    result = response.json()
-
-    if result.get('code') != 0:
-        raise AirflowException(f"API returned error: {result.get('msg')}")
-
-    is_completed = result['data']['is_completed']
-    status = result['data']['status']
-
-    print(f"Collection status: {status}, is_completed: {is_completed}")
-
-    if is_completed:
-        context['ti'].xcom_push(key='collection_status', value='success')
-        return True
-    else:
-        return False
-
-
-# Function to set timeout for pending commands
-def set_timeout_for_pending_commands(**context):
-    dag_id = context['dag'].dag_id
-    dag_run_id = context['run_id']
-
-    url = f"{API_BASE_URL}/{API_VERSION}/scheduler/set-time-out-collect-lights"
-
-    payload = {
-        "airflow_dag_id": dag_id,
-        "airflow_dag_run_id": dag_run_id
-    }
-
-    response = requests.post(
-        url=url,
-        json=payload,
-        timeout=API_TIMEOUT
-    )
-
-    if response.status_code != 200:
-        raise AirflowException(f"Failed to set timeout for pending commands: {response.text}")
-
-    result = response.json()
-
-    if result.get('code') != 0:
-        raise AirflowException(f"API returned error: {result.get('msg')}")
-
-    timedout_commands_count = result['data']['timedout_commands_count']
-    dag_status_updated = result['data']['dag_status_updated']
-
-    print(f"Set {timedout_commands_count} commands to timeout status. DAG status updated: {dag_status_updated}")
-
-    # Store information for use in the summary
-    context['ti'].xcom_push(key='timedout_commands_count', value=timedout_commands_count)
-    context['ti'].xcom_push(key='collection_status', value='timeout')
-
-    return result['data']
-
-
-# Function to update the DAG run status
-def update_dag_run_status(status, reason=None, **context):
-    dag_id = context['dag'].dag_id
-    dag_run_id = context['run_id']
-
-    url = f"{API_BASE_URL}/{API_VERSION}/scheduler/update-dag-run-status"
-
-    payload = {
-        "airflow_dag_id": dag_id,
-        "airflow_dag_run_id": dag_run_id,
-        "status": status
-    }
-
-    if reason:
-        payload["reason"] = reason
-
-    response = requests.post(
-        url=url,
-        json=payload,
-        timeout=API_TIMEOUT
-    )
-
-    if response.status_code != 200:
-        raise AirflowException(f"Failed to update DAG run status: {response.text}")
-
-    result = response.json()
-
-    if result.get('code') != 0:
-        raise AirflowException(f"API returned error: {result.get('msg')}")
-
-    print(f"Updated DAG run status to {status}")
-    return result['data']
-
-
-# Function to generate job summary and send notifications
-def generate_summary_and_notify(**context):
-    dag_id = context['dag'].dag_id
-    dag_run_id = context['run_id']
-
-    # Get email addresses for notification from DAG configuration
-    email_addresses = default_args.get('email', [])
-
-    # Add any additional notification recipients here
-    teams_channel = "traffic_monitoring"
-
-    # Combine all notification recipients
-    notify_to = email_addresses + [teams_channel]
-
-    url = f"{API_BASE_URL}/{API_VERSION}/scheduler/summary-job-and-push-notify"
-
-    payload = {
-        "airflow_dag_id": dag_id,
-        "airflow_dag_run_id": dag_run_id,
-        "notify_to": notify_to
-    }
-
-    try:
-        response = requests.post(
-            url=url,
-            json=payload,
-            timeout=API_TIMEOUT
-        )
-
-        if response.status_code != 200:
-            print(f"Warning: Failed to generate summary and send notifications: {response.text}")
-            return False
+    for attempt in range(max_attempts):
+        response = requests.get(CHECK_URL, params=params)
+        response.raise_for_status()
 
         result = response.json()
+        print(f"Check attempt {attempt + 1}: {result}")
 
-        if result.get('code') != 0:
-            print(f"Warning: API returned error: {result.get('msg')}")
-            return False
+        # Based on IOTHubResponse structure in the repository
+        if result.get('code') == 0 and result.get('data', {}).get('is_completed', False):
+            print("All traffic light commands completed successfully")
+            context['ti'].xcom_push(key='collection_success', value=True)
+            return True
 
-        summary = result['data']
+        # Sleep before next attempt
+        time.sleep(delay_seconds)
 
-        print(f"Successfully generated job summary and sent notifications")
-        print(f"Job status: {summary['status']}")
-        print(f"Total traffic lights: {summary['total_lights']}")
-        print(f"Processed traffic lights: {summary['processed_lights']}")
-        print(f"Success rate: {summary['success_rate']}%")
+    # If we reached here, collection didn't complete within the timeout
+    print("Traffic light collection did not complete within the allotted time (15 minutes)")
+    context['ti'].xcom_push(key='collection_success', value=False)
+    return False
 
-        return True
+
+def update_collection_status(**context):
+    """Update the collection status based on check result"""
+    dag_id = context['dag'].dag_id
+    dag_run_id = context['run_id']
+    collection_success = context['ti'].xcom_pull(key='collection_success')
+    is_manual_trigger = context['ti'].xcom_pull(key='is_manual_trigger', default=False)
+
+    # Add information about trigger type to the payload
+    status_payload = {
+        "airflow_dag_id": dag_id,
+        "airflow_dag_run_id": dag_run_id,
+        "is_manual_trigger": is_manual_trigger
+    }
+
+    # If collection was successful, update the status to "Done" and return
+    if collection_success:
+        print(f"Traffic light collection completed successfully at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        try:
+            status_payload["status"] = "Done"
+
+            # Call API to update the status to Done
+            response = requests.post(f"{API_BASE_URL}/v1/scheduler/update-dag-run-status", json=status_payload)
+            response.raise_for_status()
+
+            result = response.json()
+            print(f"DAG run status updated to Done: {result}")
+            return "Collection completed successfully, status updated to Done"
+        except Exception as e:
+            print(f"Error updating DAG run status to Done: {str(e)}")
+            # Continue even if the update fails
+            return "Collection completed successfully, but status update failed"
+
+    # If we got here, the collection timed out - call the timeout endpoint
+    print(f"Setting collection timeout status at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    try:
+        status_payload["status"] = "Timeout"
+
+        response = requests.post(TIMEOUT_URL, json=status_payload)
+        response.raise_for_status()
+
+        result = response.json()
+        print(f"Timeout status set: {result}")
+        return "Collection timed out, status updated"
     except Exception as e:
-        print(f"Error generating summary and sending notifications: {str(e)}")
-        return False
+        print(f"Error setting timeout status: {str(e)}")
+        raise
 
 
-# Create the DAG
-with DAG(
-        'traffic_light_collection',
-        default_args=default_args,
-        description='Collect and process traffic light data',
-        schedule_interval='0 0 * * *',  # Run daily at midnight
-        start_date=datetime(2025, 3, 1),
-        catchup=False,
-        tags=['traffic', 'data_collection'],
-) as dag:
-    start = EmptyOperator(
-        task_id='start',
-        dag=dag,
-    )
+def load_traffic_lights_cache(**context):
+    """Load traffic lights data into Redis cache"""
+    try:
+        print(f"Loading traffic lights into cache at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        response = requests.post(LOAD_CACHE_URL)
+        response.raise_for_status()
 
-    trigger_collection = PythonOperator(
-        task_id='trigger_collect_lights',
-        python_callable=trigger_collect_lights,
-        provide_context=True,
-        dag=dag,
-    )
+        result = response.json()
+        print(f"Cache loading result: {result}")
 
-    check_collection_status = HttpSensor(
-        task_id='check_collection_status',
-        http_conn_id='traffic_data_api',
-        endpoint=f"{API_VERSION}/scheduler/check-collect-lights",
-        request_params={
-            'airflow_dag_id': '{{ dag.dag_id }}',
-            'airflow_dag_run_id': '{{ run_id }}'
-        },
-        response_check=lambda response: json.loads(response.text)['data']['is_completed'] == True,
-        poke_interval=60,  # Check every 60 seconds
-        timeout=7200,  # Timeout after 2 hours
-        mode='reschedule',  # Release worker slot while waiting
-        soft_fail=True,  # Continue the DAG even if this task fails
-        dag=dag,
-    )
+        if result.get('code') == 0:
+            return "Traffic lights cache loaded successfully"
+        else:
+            raise Exception(f"Failed to load cache: {result.get('msg', 'Unknown error')}")
+    except Exception as e:
+        print(f"Error loading traffic lights cache: {str(e)}")
+        raise
 
-    handle_timeout = PythonOperator(
-        task_id='handle_timeout',
-        python_callable=set_timeout_for_pending_commands,
-        provide_context=True,
-        trigger_rule='all_failed',  # Execute if check_collection_status fails/times out
-        dag=dag,
-    )
 
-    update_success_status = PythonOperator(
-        task_id='update_success_status',
-        python_callable=update_dag_run_status,
-        op_kwargs={'status': 'Success', 'reason': 'Collection completed successfully'},
-        provide_context=True,
-        trigger_rule='all_success',  # Execute if check_collection_status succeeds
-        dag=dag,
-    )
+# Define tasks
+trigger_task = PythonOperator(
+    task_id='trigger_collect_lights',
+    python_callable=trigger_collect_lights,
+    provide_context=True,
+    dag=dag,
+)
 
-    update_timeout_status = PythonOperator(
-        task_id='update_timeout_status',
-        python_callable=update_dag_run_status,
-        op_kwargs={'status': 'Timeout', 'reason': 'Collection timed out'},
-        provide_context=True,
-        trigger_rule='all_done',  # Execute after handle_timeout is done
-        dag=dag,
-    )
+check_task = PythonOperator(
+    task_id='check_collect_lights',
+    python_callable=check_collect_lights,
+    provide_context=True,
+    dag=dag,
+)
 
-    generate_summary = PythonOperator(
-        task_id='generate_summary_and_notify',
-        python_callable=generate_summary_and_notify,
-        provide_context=True,
-        trigger_rule='all_done',  # Execute regardless of upstream task status
-        dag=dag,
-    )
+update_status_task = PythonOperator(
+    task_id='update_collect_status',
+    python_callable=update_collection_status,
+    provide_context=True,
+    dag=dag,
+)
 
-    end = EmptyOperator(
-        task_id='end',
-        dag=dag,
-    )
+load_cache_task = PythonOperator(
+    task_id='load_traffic_lights_cache',
+    python_callable=load_traffic_lights_cache,
+    provide_context=True,
+    dag=dag,
+)
 
-    # Define task dependencies
-    start >> trigger_collection >> check_collection_status
-    check_collection_status >> update_success_status
-    check_collection_status >> handle_timeout >> update_timeout_status
-    update_success_status >> generate_summary
-    update_timeout_status >> generate_summary
-    generate_summary >> end
+# Define the task dependencies
+trigger_task >> check_task >> update_status_task >> load_cache_task
