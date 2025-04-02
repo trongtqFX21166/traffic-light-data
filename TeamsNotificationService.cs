@@ -1,84 +1,129 @@
 ﻿using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
-using TrafficDataCollection.AnalyzationResult.Service.Models;
+using TrafficDataCollection.Api.Models;
+using TrafficDataCollection.Api.Services.Interfaces;
 
-namespace TrafficDataCollection.AnalyzationResult.Service.Service
+namespace TrafficDataCollection.Api.Services
 {
-    public interface ITeamsNotificationService
+    public interface INotificationService
     {
-        Task SendErrorNotificationAsync(CycleLight cycleLight, string lightName, string detailedDescription = null);
+        Task SendJobSummaryNotificationAsync(JobSummary summary, string[] recipients);
     }
 
-    public class TeamsNotificationService : ITeamsNotificationService
+    public class NotificationService : INotificationService
     {
-        private readonly ILogger<TeamsNotificationService> _logger;
+        private readonly ILogger<NotificationService> _logger;
         private readonly HttpClient _httpClient;
-        private readonly string _webhookUrl;
+        private readonly IConfiguration _configuration;
 
-        public TeamsNotificationService(
-            ILogger<TeamsNotificationService> logger,
-            IOptions<TeamsWebhookSettings> settings)
+        public NotificationService(
+            ILogger<NotificationService> logger,
+            HttpClient httpClient,
+            IConfiguration configuration)
         {
             _logger = logger;
-            _httpClient = new HttpClient();
-            _webhookUrl = settings.Value.WebhookUrl;
+            _httpClient = httpClient;
+            _configuration = configuration;
         }
 
-        public async Task SendErrorNotificationAsync(CycleLight cycleLight, string lightName, string detailedDescription = null)
+        public async Task SendJobSummaryNotificationAsync(JobSummary summary, string[] recipients)
         {
             try
             {
-                if (string.IsNullOrEmpty(_webhookUrl))
+                if (recipients == null || recipients.Length == 0)
                 {
-                    _logger.LogWarning("Teams webhook URL is not configured. Notification not sent.");
+                    _logger.LogWarning("No recipients specified for notification. Skipping notification.");
                     return;
                 }
 
-                // Format the timestamp
-                string timestamp = "Unknown";
-                if (cycleLight.CycleStartTimestamp > 0)
+                string teamsWebhookUrl = _configuration.GetValue<string>("TeamsWebhook:Url");
+
+                if (!string.IsNullOrEmpty(teamsWebhookUrl))
                 {
-                    timestamp = DateTimeOffset.FromUnixTimeSeconds(cycleLight.CycleStartTimestamp).ToString("yyyy-MM-dd HH:mm:ss");
+                    await SendTeamsNotificationAsync(summary, teamsWebhookUrl);
                 }
 
-                // Create a Teams message card with the specified format
+                // Send email notifications if email addresses are provided
+                var emailRecipients = recipients.Where(r => IsValidEmail(r)).ToArray();
+                if (emailRecipients.Length > 0)
+                {
+                    await SendEmailNotificationAsync(summary, emailRecipients);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send job summary notification");
+            }
+        }
+
+        private async Task SendTeamsNotificationAsync(JobSummary summary, string webhookUrl)
+        {
+            try
+            {
+                // Choose color based on status
+                string themeColor = summary.Status switch
+                {
+                    "Success" => "00FF00", // Green
+                    "Failed" => "FF0000",  // Red
+                    "Timeout" => "FFA500", // Orange
+                    _ => "0078D7"          // Default blue
+                };
+
+                // Calculate success rate for display
+                string successRateDisplay = $"{summary.SuccessRate:F1}%";
+
+                // Create Teams message card
                 var card = new
                 {
                     type = "MessageCard",
                     context = "http://schema.org/extensions",
-                    themeColor = "FF0000", // Red for error
-                    summary = $"Traffic Light Error: {cycleLight.ReasonCode}",
-                    title = $"Traffic Light Error: {cycleLight.ReasonCode}",
-                    text = $"An error occurred with traffic light ID {cycleLight.LightId}. Please check and resolve the issue.",
+                    themeColor = themeColor,
+                    summary = $"Traffic Light Collection Job Summary - {summary.DagId}",
+                    title = $"Traffic Light Collection Job Summary",
+                    text = $"Summary for job {summary.DagId} run on {summary.ExecutionDate:yyyy-MM-dd HH:mm:ss}",
                     sections = new[]
                     {
                         new
                         {
                             facts = new[]
                             {
-                                new { name = "Light ID:", value = cycleLight.LightId.ToString() },
-                                new { name = "Light Name:", value = lightName ?? "Unknown" },
-                                new { name = "Error Code:", value = cycleLight.ReasonCode },
-                                new { name = "Error Description:", value = detailedDescription ?? "No description available" },
-                                new { name = "Error Details:", value = cycleLight.Reason ?? "No details available" },
-                                new { name = "Timestamp:", value = timestamp }
+                                new { name = "Job ID:", value = summary.DagId },
+                                new { name = "Run ID:", value = summary.DagRunId },
+                                new { name = "Status:", value = summary.Status },
+                                new { name = "Start Time:", value = summary.StartTime.ToString("yyyy-MM-dd HH:mm:ss") },
+                                new { name = "End Time:", value = summary.EndTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? "N/A" },
+                                new { name = "Duration:", value = summary.Duration },
+                                new { name = "Total Traffic Lights:", value = summary.TotalTrafficLights.ToString() },
+                                new { name = "Processed Traffic Lights:", value = summary.ProcessedTrafficLights.ToString() },
+                                new { name = "Success Rate:", value = successRateDisplay },
+                                new { name = "Total Commands:", value = summary.TotalCommands.ToString() },
+                                new { name = "Completed Commands:", value = summary.CompletedCommands.ToString() },
+                                new { name = "Failed Commands:", value = summary.ErrorCommands.ToString() },
+                                new { name = "Timeout Commands:", value = summary.TimeoutCommands.ToString() }
                             }
                         }
                     }
                 };
+
+                // If there are error details, add them as a new section
+                if (summary.ErrorDetails != null && summary.ErrorDetails.Count > 0)
+                {
+                    var errorSection = new
+                    {
+                        title = "Error Details",
+                        text = string.Join("\n\n", summary.ErrorDetails.Take(5).Select(e =>
+                            $"- Traffic Light ID: {e.TrafficLightId}\n  Camera ID: {e.CameraId}\n  Status: {e.Status}\n  Reason: {e.Reason}"
+                        )) + (summary.ErrorDetails.Count > 5 ? $"\n\n...and {summary.ErrorDetails.Count - 5} more errors" : "")
+                    };
+                }
 
                 // Serialize to JSON
                 var json = JsonConvert.SerializeObject(card);
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
 
                 // Send to Teams webhook
-                var response = await _httpClient.PostAsync(_webhookUrl, content);
+                var response = await _httpClient.PostAsync(webhookUrl, content);
 
                 if (!response.IsSuccessStatusCode)
                 {
@@ -87,12 +132,42 @@ namespace TrafficDataCollection.AnalyzationResult.Service.Service
                 }
                 else
                 {
-                    _logger.LogInformation($"Teams notification sent successfully for Light ID {cycleLight.LightId} with error {cycleLight.ReasonCode}");
+                    _logger.LogInformation($"Teams notification sent successfully for job {summary.DagId}");
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Exception while sending Teams notification for Light ID {cycleLight.LightId}");
+                _logger.LogError(ex, $"Exception while sending Teams notification for job {summary.DagId}");
+            }
+        }
+
+        private async Task SendEmailNotificationAsync(JobSummary summary, string[] recipients)
+        {
+            try
+            {
+                // Email sending logic would go here
+                // This is a placeholder for actual email implementation
+                _logger.LogInformation($"Email notification would be sent to: {string.Join(", ", recipients)}");
+
+                // In a real implementation, you would use a service like SendGrid, SMTP, etc.
+                await Task.CompletedTask;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Exception while sending email notification for job {summary.DagId}");
+            }
+        }
+
+        private bool IsValidEmail(string email)
+        {
+            try
+            {
+                var addr = new System.Net.Mail.MailAddress(email);
+                return addr.Address == email;
+            }
+            catch
+            {
+                return false;
             }
         }
     }

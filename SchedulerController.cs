@@ -131,5 +131,38 @@ namespace TrafficLightMonitoring.Controllers
                 return InternalErrorResponse(ex.Message);
             }
         }
+
+        [HttpPost("summary-job-and-push-notify")]
+        public async Task<IActionResult> SummaryJobAndPushNotify([FromBody] SummaryJobAndPushNotifyRequest request)
+        {
+            if (string.IsNullOrEmpty(request.AirflowDagId) || string.IsNullOrEmpty(request.AirflowDagRunId))
+            {
+                return BadRequestResponse("airflow_dag_id and airflow_dag_run_id are required");
+            }
+
+            try
+            {
+                _logger.LogInformation($"Generating job summary for DAG {request.AirflowDagId}, run {request.AirflowDagRunId}");
+
+                var summary = await _schedulerService.GenerateJobSummaryAndPushNotifyAsync(
+                    request.AirflowDagId,
+                    request.AirflowDagRunId,
+                    request.NotifyTo
+                );
+
+                return SuccessResponse(summary);
+            }
+            catch (KeyNotFoundException ex)
+            {
+                _logger.LogWarning(ex.Message);
+                return NotFoundResponse(ex.Message);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error generating job summary");
+                return InternalErrorResponse(ex.Message);
+            }
+        }
+
     }
 }
