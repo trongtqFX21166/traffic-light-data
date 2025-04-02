@@ -1,5 +1,4 @@
-﻿using Elastic.Apm.Api;
-using Microsoft.Extensions.Hosting;
+﻿using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Platform.KafkaClient;
@@ -14,6 +13,7 @@ namespace TrafficDataCollection.AnalyzationResult.Service
         private readonly IConsumer _consumer;
         private readonly ICycleLightRepository _cycleLightRepository;
         private readonly ICycleLightHistoryRepository _cycleLightHistoryRepository;
+        private readonly ITrafficLightCommandRepository _trafficLightCommandRepository;
         private readonly ITeamsNotificationService _teamsNotificationService;
         private readonly ILogger<AnalyzationResultService> _logger;
 
@@ -47,12 +47,14 @@ namespace TrafficDataCollection.AnalyzationResult.Service
             IConsumer consumer,
             ICycleLightRepository cycleLightRepository,
             ICycleLightHistoryRepository cycleLightHistoryRepository,
+            ITrafficLightCommandRepository trafficLightCommandRepository,
             ITeamsNotificationService teamsNotificationService,
             ILogger<AnalyzationResultService> logger)
         {
             _consumer = consumer;
             _cycleLightRepository = cycleLightRepository;
             _cycleLightHistoryRepository = cycleLightHistoryRepository;
+            _trafficLightCommandRepository = trafficLightCommandRepository;
             _teamsNotificationService = teamsNotificationService;
             _logger = logger;
 
@@ -134,10 +136,12 @@ namespace TrafficDataCollection.AnalyzationResult.Service
                 await _cycleLightHistoryRepository.CreateAsync(cycleLightHistory);
                 _logger.LogInformation($"Created cycle light history record {cycleLightHistoryId} for Light ID {analyzationResult.Id}");
 
-                //todo: update traffic light command
-
+                // Update traffic light command status
+                await UpdateTrafficLightCommandStatus(analyzationResult);
 
                 // Update or create the cycle light record
+                //todo: add filter code should check example: SUCCESS,ERR_NO_TL,ERR_TL_NOT_ACTIVE
+                // the filter config should put in appsettings
                 if (existingCycleLight != null)
                 {
                     // Update existing record
@@ -160,7 +164,7 @@ namespace TrafficDataCollection.AnalyzationResult.Service
                     await _cycleLightRepository.UpdateAsync(existingCycleLight);
                     _logger.LogInformation($"Updated cycle light record {existingCycleLight.Id} for Light ID {analyzationResult.Id}");
 
-                    // Check if notification is needed
+                    // Check if notification is needed - uncomment if needed
                     //if (!string.IsNullOrEmpty(existingCycleLight.ReasonCode) &&
                     //    _errorReasonCodes.Contains(existingCycleLight.ReasonCode))
                     //{
@@ -199,7 +203,7 @@ namespace TrafficDataCollection.AnalyzationResult.Service
                     await _cycleLightRepository.CreateAsync(newCycleLight);
                     _logger.LogInformation($"Created new cycle light record {cycleLightId} for Light ID {analyzationResult.Id}");
 
-                    // Check if notification is needed
+                    // Check if notification is needed - uncomment if needed
                     //if (!string.IsNullOrEmpty(newCycleLight.ReasonCode) &&
                     //    _errorReasonCodes.Contains(newCycleLight.ReasonCode))
                     //{
@@ -213,6 +217,58 @@ namespace TrafficDataCollection.AnalyzationResult.Service
             catch (Exception ex)
             {
                 _logger.LogError(ex, $"Error processing analyzation result for Light ID {analyzationResult.Id}");
+            }
+        }
+
+        private async Task UpdateTrafficLightCommandStatus(VMLAnalyzationResultDto result)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(result.SeqId))
+                {
+                    _logger.LogWarning($"Cannot update traffic light command: SeqId is null or empty for Light ID {result.Id}");
+                    return;
+                }
+
+                // Convert status from analyzation result to command status
+                string commandStatus;
+                string reasonText = result.Reason ?? "";
+
+                // Determine command status based on analyzation result status and reason code
+                if (result.ReasonCode == "SUCCESS" || string.IsNullOrEmpty(result.ReasonCode))
+                {
+                    commandStatus = "Completed";
+                }
+                else if (_errorReasonCodes.Contains(result.ReasonCode))
+                {
+                    // Handle specific error codes
+                    switch (result.ReasonCode)
+                    {
+                        case "ERR_NO_FRAMES":
+                        case "ERR_OCR":
+                        case "ERR_TIMESTAMP":
+                            // These might be retriable errors
+                            commandStatus = "Failed";
+                            break;
+                        default:
+                            // Other errors are considered non-retriable
+                            commandStatus = "Failed";
+                            break;
+                    }
+                }
+                else
+                {
+                    // Default case for unknown status
+                    commandStatus = "Failed";
+                }
+
+                // Update the command in the database
+                await _trafficLightCommandRepository.UpdateAsync(result.SeqId, commandStatus, result.ReasonCode, reasonText);
+                _logger.LogInformation($"Updated traffic light command {result.SeqId} with status: {commandStatus}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Error updating traffic light command for SeqId {result.SeqId}");
             }
         }
 

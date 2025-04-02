@@ -83,6 +83,23 @@ namespace Platform.TrafficDataCollection.ExtractFrames.Service
                 _logger.LogInformation("ExtractCustomFramesAsync done");
                 // Nếu có frames đã được trích xuất và đã cấu hình để upload
 
+                //todo: add push kafka neu khong the extarct image
+                //await _producer.ProduceMessageAsync(JsonConvert.SerializeObject(new VMLAnalyzationExtractFramesDto()
+                //{
+                //    Id = eventModel.Id,
+                //    Type = eventModel.Type,
+                //    CameraSource = eventModel.CameraSource,
+                //    CameraName = eventModel.CameraName,
+                //    SeqId = eventModel.SeqId,
+                //    FrameUrl = $"",
+                //    FramesInSecond = eventModel.FramesInSecond,
+                //    DurationExtractFrame = eventModel.DurationExtractFrame,
+                //    BeginExtractFrameTime = beginExtractFrameTime,
+                //    EndExtractFrameTime = endExtractFrameTime,
+                //    Bboxes = eventModel.Bboxes,
+                //    TimestampBBox = eventModel.TimestampBBox
+                //}));
+
                 totalStopwatch.Stop();
                 _logger.LogInformation($"Tổng thời gian thực hiện: {totalStopwatch.Elapsed.TotalSeconds:F2} giây");
             }
@@ -94,7 +111,9 @@ namespace Platform.TrafficDataCollection.ExtractFrames.Service
 
         private async Task<(int successCount, int failCount)> UploadImagesToS3Direct(string imageDirectory, string lightId, long unixTime, string format)
         {
-            var files = Directory.GetFiles(imageDirectory, $"*.{format}");
+            var files = Directory.GetFiles(imageDirectory, $"*.{format}")
+                    .OrderBy(f => Path.GetFileName(f))
+                    .ToArray();
             int totalFiles = files.Length;
             int successCount = 0;
             int failCount = 0;
@@ -306,21 +325,10 @@ namespace Platform.TrafficDataCollection.ExtractFrames.Service
 
             // Thiết lập các tùy chọn
             string imageFormat = _configuration.GetValue<string>("ImageFormat", "jpg");
-            string quality = _configuration.GetValue<string>("Quality", "95");
 
-            // Độ phân giải
-            string resolution = _configuration.GetValue<string>("Resolution", "original");
-            string scaleFilter = "";
-            bool fullHD = _configuration.GetValue<bool>("FullHD", false);
-
-            if (fullHD || resolution == "fullhd")
-            {
-                scaleFilter = "scale=1920:1080:force_original_aspect_ratio=decrease,";
-            }
-            else if (resolution == "hd" || resolution == "1280x720")
-            {
-                scaleFilter = "scale=1280:720:force_original_aspect_ratio=decrease,";
-            }
+            // Higher quality settings for better image output
+            // For JPEG: Lower value = higher quality (1-31 scale, 2-5 is very high quality)
+            string quality = _configuration.GetValue<string>("Quality", "2");
 
             // Lấy thời gian bắt đầu và kết thúc từ cấu hình
             string startTime = _configuration.GetValue<string>("StartTime", "00:00:00");
@@ -329,6 +337,12 @@ namespace Platform.TrafficDataCollection.ExtractFrames.Service
 
             // Lấy khoảng thời gian giữa các frame (tính bằng giây)
             double fps = 1 / eventModel.FramesInSecond;
+
+            // Get denoising strength from configuration (0 = off, 1-3 = light to strong)
+            int denoiseStrength = _configuration.GetValue<int>("DenoiseStrength", 0);
+
+            // Get sharpening amount from configuration (0 = off, 0.5-1.5 = light to strong)
+            double sharpenAmount = _configuration.GetValue<double>("SharpenAmount", 0);
 
             // Thiết lập để theo dõi các file mới được tạo
             _directoryWatcher = new FileSystemWatcher(outputDir);
@@ -346,7 +360,7 @@ namespace Platform.TrafficDataCollection.ExtractFrames.Service
                 }
                 // Hiển thị thông tin về khung hình mới
                 _logger.LogInformation($"Khung hình {totalFramesExtracted}: {Path.GetFileName(e.FullPath)} - Thời gian: {elapsed.TotalSeconds:F3}s");
-            }; ;
+            };
             _directoryWatcher.Filter = $"*.{imageFormat}";
             _directoryWatcher.EnableRaisingEvents = true;
 
@@ -375,19 +389,53 @@ namespace Platform.TrafficDataCollection.ExtractFrames.Service
                 }
             }
 
+            // Add hwaccel for GPU acceleration if available
+            arguments.Append("-hwaccel auto ");
+
             // Thêm protocol whitelist và input URL
             arguments.Append($"-protocol_whitelist file,http,https,tcp,tls,crypto -i \"{eventModel.CameraLiveUrl}\" ");
+
+            // Build video filter chain based on configuration
+            StringBuilder filterChain = new StringBuilder("fps=" + fps);
+
+            // Add denoising if configured
+            if (denoiseStrength > 0)
+            {
+                // Use hqdn3d filter for high-quality denoising, adjust strength based on configuration
+                filterChain.Append($",hqdn3d={Math.Min(denoiseStrength, 3)}:1:2:3");
+            }
+
+            // Add sharpening if configured
+            if (sharpenAmount > 0)
+            {
+                // Use unsharp filter for sharpening, adjust amount based on configuration
+                double amount = Math.Min(sharpenAmount, 2.0);
+                filterChain.Append($",unsharp=3:3:{amount}:3:3:0");
+            }
+
+            // Create final filter graph
+            string filterGraph = filterChain.ToString();
 
             // Thêm filter và tùy chọn định dạng
             if (imageFormat == "png")
             {
                 // Đối với PNG, sử dụng màu sắc tốt nhất
-                arguments.Append($"-vf \"{scaleFilter}fps={fps}\" -pix_fmt rgb24 \"{outputPattern}\"");
+                arguments.Append($"-vf \"{filterGraph}\" -pix_fmt rgb24 ");
+
+                // Use zlib compression level 9 for better compression but smaller file size
+                arguments.Append("-compression_level 9 ");
+
+                arguments.Append($"\"{outputPattern}\"");
             }
             else
             {
                 // Đối với JPG, sử dụng tham số chất lượng
-                arguments.Append($"-vf \"{scaleFilter}fps={fps}\" -q:v {quality} \"{outputPattern}\"");
+                arguments.Append($"-vf \"{filterGraph}\" -q:v {quality} ");
+
+                // Additional options for better JPEG quality
+                arguments.Append("-huffman optimal -sample_fmt yuvj420p ");
+
+                arguments.Append($"\"{outputPattern}\"");
             }
 
             string ffmpegArgs = arguments.ToString();
@@ -497,7 +545,7 @@ namespace Platform.TrafficDataCollection.ExtractFrames.Service
             frameExtractionWatch.Stop();
             long endExtractFrameTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-
+            // Rest of the method remains unchanged
             // Hiển thị thống kê về thời gian trích xuất khung hình
             if (frameExtractionTimes.Count > 0)
             {
@@ -542,7 +590,7 @@ namespace Platform.TrafficDataCollection.ExtractFrames.Service
                     CameraSource = eventModel.CameraSource,
                     CameraName = eventModel.CameraName,
                     SeqId = eventModel.SeqId,
-                    FrameUrl = "http://localhost:9000/iothub-images?list-type=2&prefix={light-id}",
+                    FrameUrl = $"{_baseUrl}/{_bucketName}?list-type=2&prefix={eventModel.Id}/{dateUnix}",
                     FramesInSecond = eventModel.FramesInSecond,
                     DurationExtractFrame = eventModel.DurationExtractFrame,
                     BeginExtractFrameTime = beginExtractFrameTime,
@@ -554,6 +602,9 @@ namespace Platform.TrafficDataCollection.ExtractFrames.Service
                 // Xóa thư mục tạm nếu được cấu hình
                 Directory.Delete(outputDir, true);
                 _logger.LogInformation($"Đã xóa thư mục tạm: {outputDir}");
+            }
+            else { 
+            
             }
         }
 
@@ -645,6 +696,15 @@ namespace Platform.TrafficDataCollection.ExtractFrames.Service
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             await Task.WhenAll(Task.Factory.StartNew(() => _consumer.RegisterConsume(stoppingToken)));
+            //string tempDir = Path.Combine(Path.GetTempPath(), "VideoFrameExtractor_" + Guid.NewGuid().ToString());
+            //Directory.CreateDirectory(tempDir);
+            //await ExtractCustomFramesAsync(tempDir, new VMLCameraCollectionDto
+            //{
+            //    Id = "55920",
+            //    FramesInSecond = 1,
+            //    DurationExtractFrame = 180,
+            //    CameraLiveUrl = "http://192.168.8.64:8089/stream_th145.m3u8"
+            //});
         }
     }
 }
