@@ -102,7 +102,7 @@ namespace TrafficDataCollection.AnalyzationResult.Service
             {
                 // Generate a unique ID for the cycle light
                 var cycleLightId = Guid.NewGuid().ToString();
-                var cycleLightHistoryId = Guid.NewGuid().ToString();
+                var cycleLightHistoryId = analyzationResult.SeqId;
 
                 // Get existing cycle light record if it exists
                 var existingCycleLight = await _cycleLightRepository.GetByLightIdAsync(int.Parse(analyzationResult.Id));
@@ -133,6 +133,9 @@ namespace TrafficDataCollection.AnalyzationResult.Service
                 // Save the history record
                 await _cycleLightHistoryRepository.CreateAsync(cycleLightHistory);
                 _logger.LogInformation($"Created cycle light history record {cycleLightHistoryId} for Light ID {analyzationResult.Id}");
+
+                //todo: update traffic light command
+
 
                 // Update or create the cycle light record
                 if (existingCycleLight != null)
