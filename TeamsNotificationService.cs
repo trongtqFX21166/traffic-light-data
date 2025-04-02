@@ -1,5 +1,6 @@
 ﻿using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
+using System.Reflection.Metadata;
 using System.Text;
 using TrafficDataCollection.Api.Models;
 using TrafficDataCollection.Api.Services.Interfaces;
@@ -17,6 +18,12 @@ namespace TrafficDataCollection.Api.Services
         private readonly HttpClient _httpClient;
         private readonly IConfiguration _configuration;
 
+        private readonly String[] ManualErrorShouldCheckByAdmin = new string[]{ 
+            "ERR_NO_TL", 
+            "ERR_TL_NOT_ACTIVE",
+            "ERR_SEQUENCE"
+        }; 
+
         public NotificationService(
             ILogger<NotificationService> logger,
             IHttpClientFactory httpClientFac,
@@ -31,7 +38,7 @@ namespace TrafficDataCollection.Api.Services
         {
             try
             {
-            
+
 
                 string teamsWebhookUrl = _configuration.GetValue<string>("TeamsWebhookSettings:WebhookUrl");
 
@@ -72,35 +79,31 @@ namespace TrafficDataCollection.Api.Services
                 // Calculate success rate for display
                 string successRateDisplay = $"{summary.SuccessRate:F1}%";
 
-                // Create Teams message card
-                var card = new
+                // Create mentions section with users to notify
+                var mentions = new List<object>();
+                var mentionTexts = new List<string>();
+
+
+                // Create initial sections with job details
+                var sections = new List<object>
                 {
-                    type = "MessageCard",
-                    context = "http://schema.org/extensions",
-                    themeColor = themeColor,
-                    summary = $"Traffic Light Collection Job Summary - {summary.DagId}",
-                    title = $"Traffic Light Collection Job Summary",
-                    text = $"Summary for job {summary.DagId} run on {summary.ExecutionDate:yyyy-MM-dd HH:mm:ss}",
-                    sections = new[]
+                    new
                     {
-                        new
+                        facts = new[]
                         {
-                            facts = new[]
-                            {
-                                new { name = "Job ID:", value = summary.DagId },
-                                new { name = "Run ID:", value = summary.DagRunId },
-                                new { name = "Status:", value = summary.Status },
-                                new { name = "Start Time:", value = summary.StartTime.ToString("yyyy-MM-dd HH:mm:ss") },
-                                new { name = "End Time:", value = summary.EndTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? "N/A" },
-                                new { name = "Duration:", value = summary.Duration },
-                                new { name = "Total Traffic Lights:", value = summary.TotalTrafficLights.ToString() },
-                                new { name = "Processed Traffic Lights:", value = summary.ProcessedTrafficLights.ToString() },
-                                new { name = "Success Rate:", value = successRateDisplay },
-                                new { name = "Total Commands:", value = summary.TotalCommands.ToString() },
-                                new { name = "Completed Commands:", value = summary.CompletedCommands.ToString() },
-                                new { name = "Failed Commands:", value = summary.ErrorCommands.ToString() },
-                                new { name = "Timeout Commands:", value = summary.TimeoutCommands.ToString() }
-                            }
+                            new { name = "Job ID:", value = summary.DagId },
+                            new { name = "Run ID:", value = summary.DagRunId },
+                            new { name = "Status:", value = summary.Status },
+                            new { name = "Start Time:", value = summary.StartTime.ToString("yyyy-MM-dd HH:mm:ss") },
+                            new { name = "End Time:", value = summary.EndTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? "N/A" },
+                            new { name = "Duration:", value = summary.Duration },
+                            new { name = "Total Traffic Lights:", value = summary.TotalTrafficLights.ToString() },
+                            new { name = "Processed Traffic Lights:", value = summary.ProcessedTrafficLights.ToString() },
+                            new { name = "Success Rate:", value = successRateDisplay },
+                            new { name = "Total Commands:", value = summary.TotalCommands.ToString() },
+                            new { name = "Completed Commands:", value = summary.CompletedCommands.ToString() },
+                            new { name = "Failed Commands:", value = summary.ErrorCommands.ToString() },
+                            new { name = "Timeout Commands:", value = summary.TimeoutCommands.ToString() }
                         }
                     }
                 };
@@ -110,12 +113,27 @@ namespace TrafficDataCollection.Api.Services
                 {
                     var errorSection = new
                     {
-                        title = "Error Details",
-                        text = string.Join("\n\n", summary.ErrorDetails.Take(5).Select(e =>
-                            $"- Traffic Light ID: {e.TrafficLightId}\n  Camera ID: {e.CameraId}\n  Status: {e.Status}\n  Reason: {e.Reason}"
-                        )) + (summary.ErrorDetails.Count > 5 ? $"\n\n...and {summary.ErrorDetails.Count - 5} more errors" : "")
+                        title = "Error Need Manual Check",
+                        text = string.Join("\n\n", summary.ErrorDetails.Select(e =>
+                            $"- Light ID: {e.TrafficLightId}\n  Camera ID: {e.CameraId}\n  Code: {e.ReasonCode}\n  Reason: {e.Reason}"
+                        ))
                     };
+
+                    // Add the error section to the sections list
+                    sections.Add(errorSection);
                 }
+
+                // Create Teams message card with all sections
+                var card = new
+                {
+                    type = "MessageCard",
+                    context = "http://schema.org/extensions",
+                    themeColor = themeColor,
+                    summary = $"Traffic Light Collection Job Summary - {summary.DagId}",
+                    title = $"Traffic Light Collection Job Summary",
+                    text = $"{mentionsText}Summary for job {summary.DagId} run on {summary.ExecutionDate:yyyy-MM-dd HH:mm:ss}",
+                    sections = sections.ToArray()
+                };
 
                 // Serialize to JSON
                 var json = JsonConvert.SerializeObject(card);

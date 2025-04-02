@@ -14,19 +14,22 @@ namespace TrafficDataCollection.Api.Services
         private readonly ITrafficLightCommandRepository _commandRepository;
         private readonly IProducer _kafkaProducer;
         private readonly ILogger<SchedulerService> _logger;
+        private readonly INotificationService _notificationService;
 
         public SchedulerService(
             ILightService lightService,
             IAirflowDagRunRepository dagRunRepository,
             ITrafficLightCommandRepository commandRepository,
             IProducer kafkaProducer,
-            ILogger<SchedulerService> logger)
+            ILogger<SchedulerService> logger,
+            INotificationService notificationService)
         {
             _lightService = lightService;
             _dagRunRepository = dagRunRepository;
             _commandRepository = commandRepository;
             _kafkaProducer = kafkaProducer;
             _logger = logger;
+            _notificationService = notificationService;
         }
 
         public async Task<string> TriggerCollectLightsAsync(string airflowDagId, string airflowDagRunId)
@@ -242,5 +245,94 @@ namespace TrafficDataCollection.Api.Services
             _logger.LogInformation($"Successfully updated DAG run {dagRun.Id} status to '{status}'");
             return true;
         }
+
+        public async Task<JobSummary> GenerateJobSummaryAndPushNotifyAsync(string airflowDagId, string airflowDagRunId, string[] notifyTo)
+        {
+            // Get the DAG run
+            var dagRun = await _dagRunRepository.GetByAirflowIdsAsync(airflowDagId, airflowDagRunId);
+            if (dagRun == null)
+            {
+                _logger.LogWarning($"DAG run not found for {airflowDagId} / {airflowDagRunId}");
+                throw new KeyNotFoundException($"DAG run not found for {airflowDagId} / {airflowDagRunId}");
+            }
+
+            // Get all commands for this DAG run
+            var commands = await _commandRepository.GetCommandsByDagRunIdAsync(dagRun.Id);
+            var commandsList = commands.ToList();
+
+            // Calculate duration
+            TimeSpan duration = (dagRun.EndTime ?? DateTime.UtcNow) - dagRun.StartTime;
+
+            // Count commands by status
+            int completedCommands = commandsList.Count(c => c.Status == "Completed" || c.Status == "Success");
+            int errorCommands = commandsList.Count(c => c.Status == "Failed" || c.Status == "Error");
+            int timeoutCommands = commandsList.Count(c => c.Status == "Timeout");
+
+            // Calculate success rate
+            double successRate = dagRun.TotalCommands > 0
+                ? (double)completedCommands / dagRun.TotalCommands * 100
+                : 0;
+
+            // Get error details
+            //todo: add filter errorDetails code should check example: ERR_SEQUENCE,ERR_NO_TL,ERR_TL_NOT_ACTIVE
+            // the filter config should put in appsettings
+            var errorDetails = commandsList
+                .Where(c => c.Status == "Failed" || c.Status == "Error" || c.Status == "Timeout")
+                .Select(c => new CommandErrorDetail
+                {
+                    TrafficLightId = c.TrafficLightId,
+                    CameraId = c.CameraId,
+                    Status = c.Status,
+                    ReasonCode = c.ReasonCode,
+                    Reason = c.Reason
+                })
+                .ToList();
+
+            // Create job summary
+            var summary = new JobSummary
+            {
+                DagId = dagRun.AirflowDagId,
+                DagRunId = dagRun.AirflowDagRunId,
+                Status = dagRun.Status,
+                ExecutionDate = dagRun.ExecutionDate,
+                StartTime = dagRun.StartTime,
+                EndTime = dagRun.EndTime,
+                Duration = FormatDuration(duration),
+                TotalTrafficLights = dagRun.TotalTrafficLights,
+                ProcessedTrafficLights = dagRun.ProcessedTrafficLights,
+                TotalCommands = dagRun.TotalCommands,
+                CompletedCommands = completedCommands,
+                ErrorCommands = errorCommands,
+                TimeoutCommands = timeoutCommands,
+                SuccessRate = successRate,
+                ErrorDetails = errorDetails
+            };
+
+            // Send notification with the summary
+            await _notificationService.SendJobSummaryNotificationAsync(summary, notifyTo);
+
+            return summary;
+        }
+
+        private string FormatDuration(TimeSpan duration)
+        {
+            if (duration.TotalDays >= 1)
+            {
+                return $"{duration.Days}d {duration.Hours}h {duration.Minutes}m {duration.Seconds}s";
+            }
+            else if (duration.TotalHours >= 1)
+            {
+                return $"{duration.Hours}h {duration.Minutes}m {duration.Seconds}s";
+            }
+            else if (duration.TotalMinutes >= 1)
+            {
+                return $"{duration.Minutes}m {duration.Seconds}s";
+            }
+            else
+            {
+                return $"{duration.Seconds}s";
+            }
+        }
+
     }
 }
