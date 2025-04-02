@@ -1,7 +1,7 @@
 ﻿using MongoDB.Bson.Serialization.Attributes;
 using MongoDB.Bson;
 
-namespace TrafficDataCollection.Api.Models.Entities
+namespace TrafficDataCollection.AnalyzationResult.Service.Models
 {
     // TrafficLightCommand model
     public class TrafficLightCommand
@@ -15,6 +15,7 @@ namespace TrafficDataCollection.Api.Models.Entities
         public string TaskType { get; set; }
         public string Status { get; set; }
         public string Reason { get; set; }
+        public string ReasonCode { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
         public int RetryCount { get; set; }

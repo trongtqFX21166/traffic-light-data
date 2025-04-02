@@ -47,10 +47,12 @@ public class Program
             // Register repositories
             services.AddSingleton<ICycleLightRepository, CycleLightRepository>();
             services.AddSingleton<ICycleLightHistoryRepository, CycleLightHistoryRepository>();
+            services.AddSingleton<ITrafficLightCommandRepository, TrafficLightCommandRepository>();
 
             // Register notification service
             services.Configure<TeamsWebhookSettings>(context.Configuration.GetSection("TeamsWebhookSettings"));
             services.AddSingleton<ITeamsNotificationService, TeamsNotificationService>();
+
         })
         .RegisterSerilogConfig();
 }

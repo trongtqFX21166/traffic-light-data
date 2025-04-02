@@ -140,7 +140,7 @@ namespace TrafficDataCollection.AnalyzationResult.Service
                 await UpdateTrafficLightCommandStatus(analyzationResult);
 
                 // Update or create the cycle light record
-                //todo: add filter code should check example: SUCCESS,ERR_NO_TL,ERR_TL_NOT_ACTIVE
+                //todo: add filter code should update clycle light example: SUCCESS,ERR_NO_TL,ERR_TL_NOT_ACTIVE
                 // the filter config should put in appsettings
                 if (existingCycleLight != null)
                 {

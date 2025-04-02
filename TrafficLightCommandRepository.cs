@@ -1,70 +1,78 @@
-﻿using MongoDB.Driver;
-using TrafficDataCollection.Api.Models.Entities;
-using TrafficDataCollection.Api.Repository.Interfaces;
+﻿using Microsoft.Extensions.Logging;
+using MongoDB.Driver;
+using TrafficDataCollection.AnalyzationResult.Service.Models;
 using Vietmap.NetCore.MongoDb;
 
-namespace TrafficDataCollection.Api.Repository
+namespace TrafficDataCollection.AnalyzationResult.Service.Repo
 {
+    public interface ITrafficLightCommandRepository
+    {
+        Task<TrafficLightCommand> GetBySeqIdAsync(string seqId);
+        Task UpdateAsync(string seqId, string status, string reasonCode, string reason);
+    }
+
     public class TrafficLightCommandRepository : ITrafficLightCommandRepository
     {
-        private readonly IMongoDbHelper _dbHelper;
-        private readonly IMongoCollection<TrafficLightCommand> _commands;
+        private readonly IMongoCollection<TrafficLightCommand> _cmds;
+        private readonly ILogger<TrafficLightCommandRepository> _logger;
 
-        public TrafficLightCommandRepository(IEnumerable<IMongoDbHelper> dbHelpers)
+        public TrafficLightCommandRepository(IMongoDbHelper dbHelper, ILogger<TrafficLightCommandRepository> logger)
         {
-            _dbHelper = dbHelpers.FirstOrDefault(x => x.DatabaseName == "traffic_light_db");
-            _commands = _dbHelper.GetCollection<TrafficLightCommand>("traffic_light_commands");
+            _cmds = dbHelper.GetCollection<TrafficLightCommand>("traffic_light_commands");
+            _logger = logger;
         }
 
-        public async Task<IEnumerable<TrafficLightCommand>> GetCommandsByDagRunIdAsync(string dagRunId)
+        public async Task<TrafficLightCommand> GetBySeqIdAsync(string seqId)
         {
-            return await _commands.Find(cmd => cmd.DagRunId == dagRunId).ToListAsync();
+            return await _cmds.Find(cmd => cmd.Id == seqId).FirstOrDefaultAsync();
         }
 
-        public async Task<bool> AreAllCommandsCompletedAsync(string dagRunId)
+        public async Task UpdateAsync(string seqId, string status, string reasonCode, string reason)
         {
-            var pendingCount = await _commands.CountDocumentsAsync(cmd =>
-                cmd.DagRunId == dagRunId &&
-                (cmd.Status == "Pending" || cmd.Status == "Running"));
-
-            return pendingCount == 0;
-        }
-
-        public async Task CreateManyAsync(IEnumerable<TrafficLightCommand> commands)
-        {
-            await _commands.InsertManyAsync(commands);
-        }
-
-        public async Task UpdateAsync(TrafficLightCommand command)
-        {
-            await _commands.ReplaceOneAsync(cmd => cmd.Id == command.Id, command);
-        }
-
-        public async Task<IEnumerable<TrafficLightCommand>> GetPendingOrRunningCommandsByDagRunIdAsync(string dagRunId)
-        {
-            return await _commands.Find(cmd =>
-                cmd.DagRunId == dagRunId &&
-                (cmd.Status == "Pending" || cmd.Status == "Running"))
-                .ToListAsync();
-        }
-
-        public async Task UpdateManyAsync(IEnumerable<TrafficLightCommand> commands)
-        {
-            if (commands == null || !commands.Any())
-                return;
-
-            var bulkOps = new List<WriteModel<TrafficLightCommand>>();
-
-            foreach (var command in commands)
+            try
             {
-                var filter = Builders<TrafficLightCommand>.Filter.Eq(x => x.Id, command.Id);
-                var updateOp = new ReplaceOneModel<TrafficLightCommand>(filter, command);
-                bulkOps.Add(updateOp);
+                // Find the command with the given sequence ID
+                var command = await GetBySeqIdAsync(seqId);
+
+                if (command == null)
+                {
+                    _logger.LogWarning($"No traffic light command found with sequence ID: {seqId}");
+                    return;
+                }
+
+                // Update the command status and reason
+                var update = Builders<TrafficLightCommand>.Update
+                    .Set(c => c.Status, status)
+                    .Set(c => c.ReasonCode, reasonCode)
+                    .Set(c => c.Reason, reason)
+                    .Set(c => c.UpdatedAt, DateTime.UtcNow);
+
+                // If this is a retry, increment the retry count and update the last retry time
+                if (status == "Retry")
+                {
+                    update = update
+                        .Inc(c => c.RetryCount, 1)
+                        .Set(c => c.LastRetryTime, DateTime.UtcNow);
+                }
+
+                // Update the command in the database
+                var result = await _cmds.UpdateOneAsync(
+                    cmd => cmd.Id == seqId,
+                    update);
+
+                if (result.ModifiedCount > 0)
+                {
+                    _logger.LogInformation($"Successfully updated traffic light command {seqId} with status: {status}");
+                }
+                else
+                {
+                    _logger.LogWarning($"Failed to update traffic light command {seqId}, command not modified");
+                }
             }
-
-            if (bulkOps.Any())
+            catch (Exception ex)
             {
-                await _commands.BulkWriteAsync(bulkOps);
+                _logger.LogError(ex, $"Error updating traffic light command {seqId}");
+                throw;
             }
         }
     }

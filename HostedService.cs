@@ -83,23 +83,6 @@ namespace Platform.TrafficDataCollection.ExtractFrames.Service
                 _logger.LogInformation("ExtractCustomFramesAsync done");
                 // Nếu có frames đã được trích xuất và đã cấu hình để upload
 
-                //todo: add push kafka neu khong the extarct image
-                //await _producer.ProduceMessageAsync(JsonConvert.SerializeObject(new VMLAnalyzationExtractFramesDto()
-                //{
-                //    Id = eventModel.Id,
-                //    Type = eventModel.Type,
-                //    CameraSource = eventModel.CameraSource,
-                //    CameraName = eventModel.CameraName,
-                //    SeqId = eventModel.SeqId,
-                //    FrameUrl = $"",
-                //    FramesInSecond = eventModel.FramesInSecond,
-                //    DurationExtractFrame = eventModel.DurationExtractFrame,
-                //    BeginExtractFrameTime = beginExtractFrameTime,
-                //    EndExtractFrameTime = endExtractFrameTime,
-                //    Bboxes = eventModel.Bboxes,
-                //    TimestampBBox = eventModel.TimestampBBox
-                //}));
-
                 totalStopwatch.Stop();
                 _logger.LogInformation($"Tổng thời gian thực hiện: {totalStopwatch.Elapsed.TotalSeconds:F2} giây");
             }
@@ -603,8 +586,26 @@ namespace Platform.TrafficDataCollection.ExtractFrames.Service
                 Directory.Delete(outputDir, true);
                 _logger.LogInformation($"Đã xóa thư mục tạm: {outputDir}");
             }
-            else { 
-            
+            else
+            {
+                // Send a Kafka message indicating frame extraction failure
+                _logger.LogWarning("No frames were extracted, sending failure notification to Analyzation service");
+
+                await _producer.ProduceMessageAsync("VML_Analyzation_ExtractFrames", JsonConvert.SerializeObject(new VMLAnalyzationExtractFramesDto()
+                {
+                    Id = eventModel.Id,
+                    Type = eventModel.Type,
+                    CameraSource = eventModel.CameraSource,
+                    CameraName = eventModel.CameraName,
+                    SeqId = eventModel.SeqId,
+                    FrameUrl = "",
+                    FramesInSecond = eventModel.FramesInSecond,
+                    DurationExtractFrame = eventModel.DurationExtractFrame,
+                    BeginExtractFrameTime = beginExtractFrameTime,
+                    EndExtractFrameTime = endExtractFrameTime,
+                    Bboxes = eventModel.Bboxes,
+                    TimestampBBox = eventModel.TimestampBBox,
+                }));
             }
         }
 
