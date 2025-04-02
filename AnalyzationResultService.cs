@@ -17,13 +17,30 @@ namespace TrafficDataCollection.AnalyzationResult.Service
         private readonly ITeamsNotificationService _teamsNotificationService;
         private readonly ILogger<AnalyzationResultService> _logger;
 
-        // Error codes that should trigger a Teams notification
+        // Error codes that should trigger a Teams notification, updated with all error codes from the PDF
         private readonly string[] _errorReasonCodes = new[]
         {
-            "ERR_TL_NOT_ACTIVE",
-            "ERR_TIMESTAMP",
-            "ERR_NO_TL",
-            "ERR_OCR"
+            "ERR_NO_FRAMES",    // No Frames
+            "ERR_NO_TL",        // Traffic Light Not Detected
+            "ERR_TL_NOT_ACTIVE", // Traffic Light Not Active
+            "ERR_INCOMPLETE_CYCLE", // Incomplete Cycle
+            "ERR_OCR",          // OCR Extraction Error
+            "ERR_TIMESTAMP",    // Timestamp Format Error
+            "ERR_SEQUENCE",     // Frame Sequence Error
+            "ERR_UNKNOWN"       // Unknown Error
+        };
+
+        // Dictionary mapping error codes to detailed descriptions for better notifications
+        private readonly Dictionary<string, string> _errorDescriptions = new Dictionary<string, string>
+        {
+            { "ERR_NO_FRAMES", "Dữ liệu đầu vào không chứa bất kỳ frame nào, nên không thể thực hiện phân tích." },
+            { "ERR_NO_TL", "Trong toàn bộ các frame không tìm thấy bất kỳ thông tin nào liên quan đến đèn giao thông (có thể do góc quay, chất lượng ảnh hoặc lỗi trích xuất)." },
+            { "ERR_TL_NOT_ACTIVE", "Đèn giao thông được phát hiện nhưng không hoạt động (Không sáng đèn)." },
+            { "ERR_INCOMPLETE_CYCLE", "Phát hiện chu kỳ đèn (xanh – vàng – đỏ) không đầy đủ, có thể do các frame đầu đang ở trạng thái giữa chừng nên không đủ dữ liệu để tính toàn bộ chu kỳ." },
+            { "ERR_OCR", "Quá trình nhận diện ký tự quang học (OCR) thất bại khi trích xuất thông tin timestamp hoặc các thông tin liên quan từ frame." },
+            { "ERR_TIMESTAMP", "Thông tin timestamp trích xuất không hợp lệ hoặc không thể chuyển đổi sang UnixTimestamp (có thể do định dạng sai hoặc lỗi trong OCR)." },
+            { "ERR_SEQUENCE", "Các frame không theo thứ tự thời gian hợp lý hoặc thứ tự thay đổi màu đèn không tuân thủ chu trình hợp lệ (Xanh → Vàng → Đỏ → Xanh)." },
+            { "ERR_UNKNOWN", "Một lỗi không xác định đã xảy ra trong quá trình phân tích, cần xem lại log hoặc kiểm tra lại dữ liệu đầu vào để xác định nguyên nhân cụ thể." }
         };
 
         public AnalyzationResultService(
@@ -95,10 +112,8 @@ namespace TrafficDataCollection.AnalyzationResult.Service
                 {
                     Id = cycleLightHistoryId,
                     LightId = int.Parse(analyzationResult.Id),
-                   
-                    
                     CreatedAt = DateTime.UtcNow,
-                    FramesInSecond = existingCycleLight.FramesInSecond,
+                    FramesInSecond = existingCycleLight?.FramesInSecond ?? 1, // Default to 1 if no existing record
                     SecondsExtractFrame = 180, // Default value (3 minutes)
                     Source = analyzationResult.CameraSource ?? "CCTV",
                     Status = analyzationResult.Status ?? "Active",
@@ -106,7 +121,8 @@ namespace TrafficDataCollection.AnalyzationResult.Service
                     Reason = analyzationResult.Reason
                 };
 
-                if (analyzationResult.Data != null) {
+                if (analyzationResult.Data != null)
+                {
                     cycleLightHistory.RedTime = analyzationResult.Data.RedTime;
                     cycleLightHistory.GreenTime = analyzationResult.Data.GreenTime;
                     cycleLightHistory.YellowTime = analyzationResult.Data.YellowTime;
@@ -121,39 +137,35 @@ namespace TrafficDataCollection.AnalyzationResult.Service
                 // Update or create the cycle light record
                 if (existingCycleLight != null)
                 {
+                    // Update existing record
+                    existingCycleLight.CycleLightHistoryId = cycleLightHistoryId;
+                    existingCycleLight.LastModified = DateTime.UtcNow;
+                    existingCycleLight.Source = analyzationResult.CameraSource ?? existingCycleLight.Source;
+                    existingCycleLight.Status = analyzationResult.Status ?? existingCycleLight.Status;
+                    existingCycleLight.ReasonCode = analyzationResult.ReasonCode;
+                    existingCycleLight.Reason = analyzationResult.Reason;
+
+                    if (analyzationResult.Data != null)
+                    {
+                        existingCycleLight.RedTime = analyzationResult.Data.RedTime;
+                        existingCycleLight.GreenTime = analyzationResult.Data.GreenTime;
+                        existingCycleLight.YellowTime = analyzationResult.Data.YellowTime;
+                        existingCycleLight.TimeTick = analyzationResult.Data.TimeTick;
+                        existingCycleLight.CycleStartTimestamp = analyzationResult.Data.CycleStartUnixTimestamp;
+                    }
+
                     await _cycleLightRepository.UpdateAsync(existingCycleLight);
                     _logger.LogInformation($"Updated cycle light record {existingCycleLight.Id} for Light ID {analyzationResult.Id}");
 
                     // Check if notification is needed
-                    if (!string.IsNullOrEmpty(existingCycleLight.ReasonCode) &&
-                        _errorReasonCodes.Contains(existingCycleLight.ReasonCode))
-                    {
-                        await _teamsNotificationService.SendErrorNotificationAsync(
-                            existingCycleLight,
-                            analyzationResult.CameraName);
-                    }
-                    else 
-                    {
-                        // Update existing record
-                        existingCycleLight.CycleLightHistoryId = cycleLightHistoryId;
-                       
-                        
-                        existingCycleLight.LastModified = DateTime.UtcNow;                       
-                        existingCycleLight.FramesInSecond = existingCycleLight.FramesInSecond;
-                        existingCycleLight.Source = analyzationResult.CameraSource ?? existingCycleLight.Source;
-                        existingCycleLight.Status = analyzationResult.Status ?? existingCycleLight.Status;
-                        existingCycleLight.ReasonCode = analyzationResult.ReasonCode;
-                        existingCycleLight.Reason = analyzationResult.Reason;
-
-                        if (analyzationResult.Data != null) {
-                            existingCycleLight.RedTime = analyzationResult.Data.RedTime;
-                            existingCycleLight.GreenTime = analyzationResult.Data.GreenTime;
-                            existingCycleLight.YellowTime = analyzationResult.Data.YellowTime;
-                            existingCycleLight.TimeTick = analyzationResult.Data.TimeTick;
-                            existingCycleLight.CycleStartTimestamp = analyzationResult.Data.CycleStartUnixTimestamp;
-                        }
-
-                    }
+                    //if (!string.IsNullOrEmpty(existingCycleLight.ReasonCode) &&
+                    //    _errorReasonCodes.Contains(existingCycleLight.ReasonCode))
+                    //{
+                    //    await _teamsNotificationService.SendErrorNotificationAsync(
+                    //        existingCycleLight,
+                    //        analyzationResult.CameraName,
+                    //        GetDetailedErrorDescription(existingCycleLight.ReasonCode));
+                    //}
                 }
                 else
                 {
@@ -163,13 +175,8 @@ namespace TrafficDataCollection.AnalyzationResult.Service
                         Id = cycleLightId,
                         CycleLightHistoryId = cycleLightHistoryId,
                         LightId = int.Parse(analyzationResult.Id),
-                        RedTime = analyzationResult.Data.RedTime,
-                        GreenTime = analyzationResult.Data.GreenTime,
-                        YellowTime = analyzationResult.Data.YellowTime,
-                        CycleStartTimestamp = analyzationResult.Data.CycleStartUnixTimestamp,
                         LastModified = DateTime.UtcNow,
-                        TimeTick = analyzationResult.Data.TimeTick,
-                        FramesInSecond = existingCycleLight.FramesInSecond,
+                        FramesInSecond = 1, // Default value
                         SecondsExtractFrame = 180, // Default value (3 minutes)
                         Source = analyzationResult.CameraSource ?? "CCTV",
                         Status = analyzationResult.Status ?? "Active",
@@ -177,23 +184,44 @@ namespace TrafficDataCollection.AnalyzationResult.Service
                         Reason = analyzationResult.Reason
                     };
 
+                    if (analyzationResult.Data != null)
+                    {
+                        newCycleLight.RedTime = analyzationResult.Data.RedTime;
+                        newCycleLight.GreenTime = analyzationResult.Data.GreenTime;
+                        newCycleLight.YellowTime = analyzationResult.Data.YellowTime;
+                        newCycleLight.TimeTick = analyzationResult.Data.TimeTick;
+                        newCycleLight.CycleStartTimestamp = analyzationResult.Data.CycleStartUnixTimestamp;
+                    }
+
                     await _cycleLightRepository.CreateAsync(newCycleLight);
                     _logger.LogInformation($"Created new cycle light record {cycleLightId} for Light ID {analyzationResult.Id}");
 
                     // Check if notification is needed
-                    if (!string.IsNullOrEmpty(newCycleLight.ReasonCode) &&
-                        _errorReasonCodes.Contains(newCycleLight.ReasonCode))
-                    {
-                        await _teamsNotificationService.SendErrorNotificationAsync(
-                            newCycleLight,
-                            analyzationResult.CameraName);
-                    }
+                    //if (!string.IsNullOrEmpty(newCycleLight.ReasonCode) &&
+                    //    _errorReasonCodes.Contains(newCycleLight.ReasonCode))
+                    //{
+                    //    await _teamsNotificationService.SendErrorNotificationAsync(
+                    //        newCycleLight,
+                    //        analyzationResult.CameraName,
+                    //        GetDetailedErrorDescription(newCycleLight.ReasonCode));
+                    //}
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, $"Error processing analyzation result for Light ID {analyzationResult.Id}");
             }
+        }
+
+        // Helper method to get detailed error description
+        private string GetDetailedErrorDescription(string reasonCode)
+        {
+            if (_errorDescriptions.TryGetValue(reasonCode, out string description))
+            {
+                return description;
+            }
+
+            return "Không có mô tả chi tiết cho mã lỗi này.";
         }
     }
 }

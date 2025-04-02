@@ -12,7 +12,7 @@ namespace TrafficDataCollection.AnalyzationResult.Service.Service
 {
     public interface ITeamsNotificationService
     {
-        Task SendErrorNotificationAsync(CycleLight cycleLight, string lightName);
+        Task SendErrorNotificationAsync(CycleLight cycleLight, string lightName, string detailedDescription = null);
     }
 
     public class TeamsNotificationService : ITeamsNotificationService
@@ -30,7 +30,7 @@ namespace TrafficDataCollection.AnalyzationResult.Service.Service
             _webhookUrl = settings.Value.WebhookUrl;
         }
 
-        public async Task SendErrorNotificationAsync(CycleLight cycleLight, string lightName)
+        public async Task SendErrorNotificationAsync(CycleLight cycleLight, string lightName, string detailedDescription = null)
         {
             try
             {
@@ -40,13 +40,22 @@ namespace TrafficDataCollection.AnalyzationResult.Service.Service
                     return;
                 }
 
-                // Create a Teams message card
+                // Format the timestamp
+                string timestamp = "Unknown";
+                if (cycleLight.CycleStartTimestamp > 0)
+                {
+                    timestamp = DateTimeOffset.FromUnixTimeSeconds(cycleLight.CycleStartTimestamp).ToString("yyyy-MM-dd HH:mm:ss");
+                }
+
+                // Create a Teams message card with the specified format
                 var card = new
                 {
                     type = "MessageCard",
                     context = "http://schema.org/extensions",
                     themeColor = "FF0000", // Red for error
+                    summary = $"Traffic Light Error: {cycleLight.ReasonCode}",
                     title = $"Traffic Light Error: {cycleLight.ReasonCode}",
+                    text = $"An error occurred with traffic light ID {cycleLight.LightId}. Please check and resolve the issue.",
                     sections = new[]
                     {
                         new
@@ -56,8 +65,9 @@ namespace TrafficDataCollection.AnalyzationResult.Service.Service
                                 new { name = "Light ID:", value = cycleLight.LightId.ToString() },
                                 new { name = "Light Name:", value = lightName ?? "Unknown" },
                                 new { name = "Error Code:", value = cycleLight.ReasonCode },
-                                new { name = "Error Reason:", value = cycleLight.Reason },
-                                new { name = "Timestamp:", value = DateTimeOffset.FromUnixTimeSeconds(cycleLight.CycleStartTimestamp).ToString("yyyy-MM-dd HH:mm:ss") }
+                                new { name = "Error Description:", value = detailedDescription ?? "No description available" },
+                                new { name = "Error Details:", value = cycleLight.Reason ?? "No details available" },
+                                new { name = "Timestamp:", value = timestamp }
                             }
                         }
                     }

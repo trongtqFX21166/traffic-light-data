@@ -49,8 +49,7 @@ public class Program
             services.AddSingleton<ICycleLightHistoryRepository, CycleLightHistoryRepository>();
 
             // Register notification service
-            services.Configure<TeamsWebhookSettings>("TeamsWebhookSettings",
-             context.Configuration.GetSection("TeamsWebhookSettings"));
+            services.Configure<TeamsWebhookSettings>(context.Configuration.GetSection("TeamsWebhookSettings"));
             services.AddSingleton<ITeamsNotificationService, TeamsNotificationService>();
         })
         .RegisterSerilogConfig();
