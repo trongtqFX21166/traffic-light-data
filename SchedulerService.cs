@@ -69,7 +69,7 @@ namespace TrafficDataCollection.Api.Services
 
                 var command = new TrafficLightCommand
                 {
-                    Id = sequenceId,
+                    SeqId = sequenceId,
                     DagRunId = dagRun.Id,
                     TaskType = "Start_Collect_TrafficLight",
                     Status = "Pending",
@@ -274,8 +274,7 @@ namespace TrafficDataCollection.Api.Services
                 : 0;
 
             // Get error details
-            //todo: add filter errorDetails code should check example: ERR_SEQUENCE,ERR_NO_TL,ERR_TL_NOT_ACTIVE
-            // the filter config should put in appsettings
+           
             var errorDetails = commandsList
                 .Where(c => c.Status == "Failed" || c.Status == "Error" || c.Status == "Timeout")
                 .Select(c => new CommandErrorDetail
