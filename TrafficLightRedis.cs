@@ -17,6 +17,10 @@ namespace TrafficDataCollection.Api.Models.Cache
         [JsonPropertyName("LightId")]
         public int LightId { get; set; }
 
+        [Indexed]
+        [JsonPropertyName("MapLightId")]
+        public int MapLightId { get; set; }
+
         [JsonPropertyName("lat")]
         public double Latitude { get; set; }
 
